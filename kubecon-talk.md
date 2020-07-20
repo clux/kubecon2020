@@ -9,6 +9,8 @@ We'll talk a little bit about how a richer type system like rust gives us more a
 
 But this is still meant to be a pretty positive talk. Yes, some invariants are broken, but kubernetes is still remarkably consistent in its api despite shortcomings of the language.
 
+Also, I hope that you'll get a little bit of a high level overview of some of the recent advancements in rust like; async/streams/tokio/web frameworks/metrics/tracing that makes writing controllers in rust very enjoyable. THOUGH WITH CAVEAT; many rough edges atm.
+
 ## THANKS
 - Arnav Singh / @Arnavion for k8s-openapi
 provides structures from openapi schemas, as well as factoring out
@@ -94,3 +96,10 @@ The big one...
 
 ## Building Controllers
 not rehashing best practices. most advice from kubebuilder / controller-runtime applies. reconcile needs to be idempotent, check state of the world before you redo all the work on a duplicate event. use server side apply.
+
+## Examples
+Mention streams need to be polled.
+Mention boxing.
+
+## Caveats
+Rough edges. Testing story (can be done now with streams).
