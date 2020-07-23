@@ -109,7 +109,7 @@ WatchEvents are what you received when you perform a watch call, aka a GET on a 
 so for each line you can parse the inner object as the type you actually have.
 oh, and since these objects are frequently bigger than the MTU, any client would need to buffer chunks until you have a complete line.
 
-so this is fine. this is fine. all apis use this and it's consistent.
+so we can work with that. all apis use this and it's consistent.
 
 well.. at least it was. so let's move on to broken assumptions.
 
