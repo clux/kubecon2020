@@ -7,7 +7,7 @@ Today, talking about the kubernetes api, some of the generic assumptions and inv
 We'll talk a little bit about how a richer type system - like rust's - gives us more a lot more for free in this regard, but with the caveat that we are still building on top of kubernetes' api, which is written in go.
 => Broken invariants need to be respected in rust land as well.
 
-But this is still meant to be a pretty positive talk. Yes, some invariants are broken, but kubernetes is still remarkably consistent in its api despite shortcomings of the language.
+But this is still meant to be a pretty positive talk. Yes, some invariants are broken, but regardless, kubernetes is still remarkably consistent in its api despite shortcomings of the language.
 
 Additionally, this might serve as a bit of a high level view into async rust (which was released on stable in just about a year ago - so there's been tons of advancements there). IMO, it's now in a really good place, library ecosystem is great and starting to properly stabilize. However, the learning curve is ever present. And there are some rough edges.
 
