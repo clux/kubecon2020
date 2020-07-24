@@ -254,8 +254,22 @@ because it makes it so awkward to unwrap something that has to be there (except 
 
 
 ...let's return to building on top of this.
+
 ### Resource
-Show the core props + what we need to use api. Params objects. One FILE!
+Show `Resource`. Note basically a copy of data that's in the `Resource` trait + the dynamic property of what namespace it lives in (if it's a namespaced resource).
+
+```rust
+#[derive(Clone, Debug)]
+pub struct Resource {
+    pub api_version: String,
+    pub group: String,
+    pub kind: String,
+    pub version: String,
+    pub namespace: Option<String>,
+}
+```
+
+can create manually, or instant win ctor (assuming )
 
 ```rust
 impl Resource {
@@ -271,33 +285,95 @@ impl Resource {
 }
 ```
 
+can also define the function that dictates all of k8s urls:
+
+```rust
+impl Resource {
+    fn make_url(&self) -> String {
+        let ns = self.namespace.as_ref().map(|n| format!("namespaces/{}/", n));
+        format!(
+            "/{group}/{api_version}/{namespaces}{resource}",
+            group = if self.group.is_empty() { "api" } else { "apis" },
+            api_version = self.api_version,
+            namespaces = ns.unwrap_or_default(),
+            resource = to_plural(&self.kind.to_ascii_lowercase()),
+        )
+    }
+}
+```
+
 CAVEAT: load-bearing pluralize.
 phrase i had never believed i had to use to describe software architecture, let alone from my own designs, but here we are.
 
-## Types.go linkin
-Remember when I mentioned all the structs in types.go? These are the ones we define in kube-rs.
-## List types
-We also have ListParams, PatchParams.
+### Urls => PatchParams/CreateParams (types.go)
+Remember when I mentioned all the structs in types.go? These are some of thne few structs we define in kube-rs. Can be used to create:
 
 ## Dynamic API
 Show resource.rs converting into bytestream.
 Of course, this isn't really what we want. We don't want to be interjecting at every point of the way to try to deserialize a bytestream into a concrete type.
 
-### Api<K> trait where K: Metadata
+```rust
+impl Resource {
+    pub fn create(&self, pp: &PostParams, data: Vec<u8>) -> Result<Request<Vec<u8>>> {
+        let base_url = self.make_url() + "?";
+        let mut qp = url::form_urlencoded::Serializer::new(base_url);
+        if pp.dry_run {
+            qp.append_pair("dryRun", "All");
+        }
+        let urlstr = qp.finish();
+        let req = http::Request::post(urlstr);
+        req.body(data).map_err(Error::HttpError)
+    }
+}
+```
+
+### Api<K> where K: Metadata
 Show how to generate all those methods you saw in client-go across all types with a blanket impl.
+
+```rust
+impl<K> Api<K>
+where K: Clone + Deserialize + Metadata,
+{
+    pub async fn create(&self, pp: &PostParams, data: &K) -> Result<K>
+    where K: Serialize,
+    {
+        let bytes = serde_json::to_vec(&data)?;
+        let req = self.resource.create(&pp, bytes)?;
+        self.client.request::<K>(req).await
+    }
+}
+```
 
 ### In general: Lean on types
 trying to catch errors with type safety rather than --pattern and passive code generation (like kubebuilder)
 
 ## Code Generation
-## #[derive(Serialize, Deserialize)]
-## #[serde(rename_all = "camelCase")]
-## #[derive(CustomResource)]
-## #[kube(group = "clux.dev", version = "v1", namespaced)]
+### Serialize
+```rust
+#[derive(Serialize, Deserialize)]
+pub struct MyFoo {
+    name: String,
+    info: Option<String>,
+}
+```
+tons of extra things serde can do, similar to go `serde(rename_all = "camelCase")`
 
 So we can do all the necessary code generation that doesn't completely fit within a strict typesystem with procedural macros. They are effectively a way to generate code, but it's a first class citizen of cargo; rust's build system and package manager.
 
 When you `cargo build`, these procedural macros generate code which is then used in the main compilation stage. So that whole class of errors where you are operating on a stale version of generated code, can just disappear.
+
+## CustomResource
+```rust
+#[derive(CustomResource, Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[kube(group = "clux.dev", version = "v1", kind = "Foo", namespaced)]
+#[kube(status = "FooStatus")
+//#[kube(apiextensions = "v1beta1")] // kubernetes <= 1.16
+pub struct MyFoo {
+    name: String,
+    info: Option<String>,
+}
+```
+
 
 ### Watch
 Mention hard parts briefly. Chunking. Async. impl Stream == async iterator.
