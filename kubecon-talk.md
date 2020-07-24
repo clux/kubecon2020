@@ -2,14 +2,13 @@
 ## INTRO
 Hey. I'm Eirik aka clux on github and am one of the main maintainers on kube-rs.
 
-Today, talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, is either a best-effort ordeal, and in other broken.
+Today, talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, is either enforced successfully through consistency, or it's broken.
 
-We'll talk a little bit about how a richer type system - like rust's - gives us more a lot more for free in this regard, but with the caveat that we are still building on top of kubernetes' api, which is written in go.
-=> Broken invariants need to be respected in rust land as well.
+We'll talk a little bit about how a richer type system - like rust's - gives us more a lot more for free in this regard. But for kubernetes; it's not be a magic bullet. Any broken invariants on the Go side would still need to be respected in rust land.
 
-But this is still meant to be a pretty positive talk. Yes, some invariants are broken, but regardless, kubernetes is still remarkably consistent in its api despite shortcomings of the language.
+But this is still going to be a pretty positive talk. Yes, some invariants are broken, but regardless, kubernetes is remarkably consistent in its api despite shortcomings of the language. And I'll show some examples of this.
 
-Additionally, this might serve as a bit of a high level view into async rust (which was released on stable in just about a year ago - so there's been tons of advancements there). IMO, it's now in a really good place, library ecosystem is great and starting to properly stabilize. However, the learning curve is ever present. And there are some rough edges.
+Finally, this is going to serve as a bit of a high level view into rust async application design....somethingsomething (which was released on stable in just about a year ago - so there's been tons of advancements there). IMO, it's now in a really good place, library ecosystem is great and starting to properly stabilize. However, the learning curve is ever present. And there are some rough edges.
 
 ## Kubernetes
 Let's talk about kubernetes provides.
@@ -42,7 +41,7 @@ LabelSelectors.
 https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L1095-L1104
 that sits inside ListOptions, so there's a generic way of filtering
 
-Sorry to go on for so long about this file, but the consistency and complete adoption of this file is they key to what makes any generics in other languages possible.
+So I am raving this about this, but it's because of the consistency and complete adoption of everything in this; that kubernetes feels so consistent and why we can actually make generic assumptions in other languages.
 
 ### client-go consistency
 The same consistency can be seen in client-go
@@ -57,7 +56,7 @@ how could be this possibly be consistent?
 https://github.com/kubernetes/client-go/blob/master/kubernetes/typed/apps/v1/deployment.go#L17
 
 right. all of this is generated.
-because people recognised you have to enforce some of these assumptions for them to stick.
+because people recognised that you **have** to enforce some of these assumptions for them to stick.
 
 now, this isn't generics, but it's consistency.
 for each, kind, the specific structs are specialized manually
@@ -69,8 +68,8 @@ https://github.com/kubernetes/client-go/blob/master/informers/apps/v1/statefulse
 
 as a result; client-go > 100K LOC (without vendoring)
 
-and i'm not trying to judge here. this is great.
-the fact that everything looks the same is what enables `kubectl` to provide such a consistent interface.
+and again i'm not trying to judge here. this is great.
+the fact that everything looks the same in here, is what enables `kubectl` to provide such a consistent interface.
 
 ### api endpoints
 url consistency lets us make easy mappings between types and urls
@@ -90,6 +89,8 @@ GET /apis/GROUP/VERSION/namespaces/NAMESPACE/RESOURCETYPE/NAME
 https://kubernetes.io/docs/reference/using-api/api-concepts/#standard-api-terminology
 
 though things start to break down a little bit here even though this is straight out of the "Standard API Terminology" page on the kubernetes website.
+
+### Broken: empty api group
 because this does not hold for pods, nodes, namespaces, and any other type in the core object list. they have a different url that starts with `api` rather than `apis`.
 
 ```
@@ -111,53 +112,165 @@ oh, and since these objects are frequently bigger than the MTU, any client would
 
 so we can work with that. all apis use this and it's consistent.
 
-well.. at least it was. so let's move on to broken assumptions.
-
-## BROKEN ASSUMPTIONS
-### Object<Spec, Status>
-What people tell you it's like. Bring up some snowflakes.
-
-### Optional everything
-even though a resource having a name inside a namespace is a fundamental idea
-
-metadata.name optional (yes, because of `generatename`..)
-https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L117-L118
-so there's a decicion that now causes all clients to have to deref
-rather than distinguish between partial data accepted as input and finalized stored input
-
-### Optional metadata
-screenshot code with the +optional... in pod?
-https://github.com/kubernetes/api/blob/master/core/v1/types.go#L3667-L3686
-
-### empty api group
-in general we have url consistency, but not for core types (in empty group)
-
-### conditions..
-https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L1367
-
-### watch is broken
-mention many issues, stale rvs, relisting required from a client re-watch every <300s. so much data (node informer, hah). can't filter out events.
-writing controller to reconcile? you'll trigger your own loop.. (TODO: verify)
-
-### watchevent is weird for bookmarks
-does not pack object inside
-
-## WHERE TO DRAW THE LINE
-Show where we are. Evolving target.
+## END PRAISE - CONSTRUCT AROUND IN RUST
 
 ## THANKS
 first a few thanks.. I'll be talking about a grab bag of different things, but from the perspective of [kube-rs](https://github.com/clux/kube-rs/).
 
-- Arnav Singh / @Arnavion for k8s-openapi
-generates structures from openapi schemas, as well as factoring out several traits that is then implemented for these structures
+- Arnav Singh / @Arnavion for `k8s-openapi`
+generates rust structures from openapi schemas, plus as factoring out several traits that is then implemented for these structures
 the project really is the lynchpin that makes any generics possible
 
 ### Metadata
-From k8s-metadata. Trait with associated constants. Codegen fills this in. Lynchpin.
-Type system here is effectively telling you that these constants are available for every struct that implements this trait. And every k8s-openapi type implements it. So you just have to import the trait to be able to read these values.
+Resource trait. Type system here is effectively telling you that these constants are available for every struct that implements this trait. So you just have to import the trait to be able to read these values.
+
+Arnav's Codegen implements this trait for every kubernetes object
+
+```rust
+pub trait Resource {
+    const API_VERSION: &'static str;
+    const GROUP: &'static str;
+    const KIND: &'static str;
+    const VERSION: &'static str;
+}
+```
+
+Normally traits are meant to encapsulate behaviour, but you are allowed to put in static associated constants. 
 
 ### Resource
+Another one from `k8s-openapi`. Metadata trait.
+
+```rust
+pub trait Metadata: Resource {
+    type Ty;
+    fn metadata(&self) -> &Self::Ty;
+}
+```
+
+Tells you that every object that implements it, has a way to extract a reference to its metadata. Can configure what the metadata type `Ty` actually is, but in 99% of cases it's `ObjectMeta`, and the other is `List<T>` which uses `ListMeta`.
+
+### Two root traits - what can we do
+Let's try something naive first.
+
+#### Broken: Object<Spec, Status>
+Who's heard this. A k8s object consists only of `apiVersion` + `kind`, `metadata`, `spec`, `status` structs? What people tell you it's like. Even maintainers will use this simplification.
+
+```rust
+pub struct Object<Spec, Status> {
+    pub types: TypeMeta, // apiVersion + kind
+    pub metadata: ObjectMeta,
+    pub spec: Spec,
+    pub status: Option<Status>,
+}
+```
+
+how this would look in rust. Notice we can actually model this very easily. `Spec` and `Status` here are generic types and are specialized at compile time for the various invocations.
+
+The problem with this is that it's not in general true.
+
+### Broken: Snowflakes
+Look at configmap (data +  binary_data). Fields at the top level.
+
+```rust
+pub struct ConfigMap {
+    pub binary_data: Option<BTreeMap<String, ByteString>>,
+    pub data: Option<BTreeMap<String, String>>,
+    pub immutable: Option<bool>,
+    pub metadata: ObjectMeta,
+}
+```
+
+similar story for secret:
+
+```rust
+pub struct Secret {
+    pub data: Option<BTreeMap<String, ByteString>>,
+    pub immutable: Option<bool>,
+    pub metadata: ObjectMeta,
+    pub string_data: Option<BTreeMap<String, String>>,
+    pub type_: Option<String>,
+}
+```
+
+```rust
+pub struct ServiceAccount {
+    pub automount_service_account_token: Option<bool>,
+    pub image_pull_secrets: Option<Vec<LocalObjectReference>>,
+    pub metadata: ObjectMeta,
+    pub secrets: Option<Vec<ObjectReference>>,
+}
+```
+(no spec, automount bool)
+
+tons more `Endpoint` (subsets vec), `Role` (rules obj), `RoleBinding` (subjects + roleRef).
+
+and the wtf struct `Event`, with 15 random fields:
+
+```rust
+pub struct Event {
+    pub action: Option<String>,
+    pub count: Option<i32>,
+    pub event_time: Option<MicroTime>,
+    pub first_timestamp: Option<Time>,
+    pub involved_object: ObjectReference,
+    pub last_timestamp: Option<Time>,
+    pub message: Option<String>,
+    pub metadata: ObjectMeta,
+    pub reason: Option<String>,
+    pub related: Option<ObjectReference>,
+    pub reporting_component: Option<String>,
+    pub reporting_instance: Option<String>,
+    pub series: Option<EventSeries>,
+    pub source: Option<EventSource>,
+    pub type_: Option<String>,
+}
+```
+
+The core objects really cause a lot of trouble.
+
+=> can only really on metadata existing
+.. in terms of types then, how much of metadata can we rely on?
+
+#### Broken: Optional names
+even though a resource having a name inside a namespace is a fundamental idea
+
+metadata.name optional (yes, because of `generatename`..)
+https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L117-L118
+so the consequence of +optional => every clients now have to assume non-null
+it's an easy assumption to make, but it's a prominent example of many
+and it leads you down a very uneasy road having to unwrap every option
+
+even worse one:
+
+#### Broken: Optional metadata
+screenshot code with the +optional... in pod?
+https://github.com/kubernetes/api/blob/master/core/v1/types.go#L3667-L3686
+...how? we said we had that guarantee?
+
+we think this is because `patch` requests that allow sending empty metadata in the body (only acts on spec/status (dep on what you patch), name already inferrable from the url).
+
+so this is one we deliberately disobey.
+because it makes it so awkward to unwrap something that has to be there (except in weird manual stuff you write yourself)
+
+
+...let's return to building on top of this.
+### Resource
 Show the core props + what we need to use api. Params objects. One FILE!
+
+```rust
+impl Resource {
+    pub fn namespaced<K: k8s_openapi::Resource>(ns: &str) -> Self {
+        Self {
+            api_version: K::API_VERSION.to_string(),
+            kind: K::KIND.to_string(),
+            group: K::GROUP.to_string(),
+            version: K::VERSION.to_string(),
+            namespace: Some(ns.to_string()),
+        }
+    }
+}
+```
+
 CAVEAT: load-bearing pluralize.
 phrase i had never believed i had to use to describe software architecture, let alone from my own designs, but here we are.
 
@@ -190,6 +303,38 @@ When you `cargo build`, these procedural macros generate code which is then used
 Mention hard parts briefly. Chunking. Async. impl Stream == async iterator.
 ..but re-list
 
+### Broken: watch
+mention many issues, stale rvs, relisting required from a client re-watch every <300s. so much data (node informer, hah). can't filter out events.
+writing controller to reconcile? you'll trigger your own loop.. (TODO: verify)
+
+
+### watchevent is weird for bookmarks
+does not pack object inside
+
+```
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(tag = "type", content = "object", rename_all = "UPPERCASE")]
+pub enum WatchEvent<K> {
+    Added(K),
+    Modified(K),
+    Deleted(K),
+    Bookmark(K),
+    Error(ErrorResponse),
+}
+```
+
+```
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(tag = "type", content = "object", rename_all = "UPPERCASE")]
+pub enum WatchEvent<K> {
+    Added(K),
+    Modified(K),
+    Deleted(K),
+    Bookmark(Bookmark),
+    Error(ErrorResponse),
+}
+```
+
 ## Runtime
 How to build on top of watch and the api?
 
@@ -205,6 +350,8 @@ Builds on top of watcher and adds a store. Move ensures no use after constructio
 ### Controller
 The big one...
 
+### conditions..
+https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L1367
 
 ## Building Controllers
 not rehashing best practices. most advice from kubebuilder / controller-runtime applies. reconcile needs to be idempotent, check state of the world before you redo all the work on a duplicate event. use server side apply.
