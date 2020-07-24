@@ -379,15 +379,26 @@ pub struct MyFoo {
 Mention hard parts briefly. Chunking. Async. impl Stream == async iterator.
 ..but re-list
 
-### Broken: watch
-mention many issues, stale rvs, relisting required from a client re-watch every <300s. so much data (node informer, hah). can't filter out events.
-writing controller to reconcile? you'll trigger your own loop.. (TODO: verify)
+### Broken: Watch
+mention many issues, stale rvs, relisting required from a client re-watch every <300s.
 
+then the amount of data. tried using a node informer? sooo much noise. FULL 10k data every 5s because the conditions in its status object contain a last updated timestamp...
+
+### Broken: Conditions
+while we are talking about conditions
+https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L1367
+sits inside a vector, so they all look the same, so you have to always filter the conditions for the type you want. presumably so that `kubectl describe` can display all conditions in one nice table.
+
+but, we could deal with that. What we cannot deal with is that you cannot really `patch_status` to update particular condition entry.
+
+none of the original patch types even work (strategic might have, but not supported on crds). so you need at least server side apply to even use conditions.
+
+TODO: maybe skip this section, and maybe revisit https://github.com/clux/kube-rs/issues/43
 
 ### watchevent is weird for bookmarks
 does not pack object inside
 
-```
+```rust
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(tag = "type", content = "object", rename_all = "UPPERCASE")]
 pub enum WatchEvent<K> {
@@ -399,7 +410,7 @@ pub enum WatchEvent<K> {
 }
 ```
 
-```
+```rust
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(tag = "type", content = "object", rename_all = "UPPERCASE")]
 pub enum WatchEvent<K> {
@@ -412,31 +423,113 @@ pub enum WatchEvent<K> {
 ```
 
 ## Runtime
-How to build on top of watch and the api?
+How to build on top of watch and the api. Well we got to watch continously, but not longer than 5 minutes, propagate all user errors, retry/re-list on desync errors, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
 
-- Teo K. Röijezon / @teozkr for kube-runtime
-Figured out an entirely Stream based solution for reflectors/watchers and controllers, and rewrote the entire runtime part of `kube`. It's an amazing techncial achievement that we're just barely starting to gain the benefit of.
+So a huge shoutout to my other maintainer:
+
+- Teo K. Röijezon / @teozkr who wrote kube-runtime (controller-runtime equivalent)
+
+He basically figured out an entirely Stream based solution for watchers/reflectors and controllers, and rewrote that entire module of `kube`.
+
+It's an amazing technical achievement that makes it really easy to integrate into your application.
 
 ### Watcher
 Informer-like. But FSM.
 
+```rust
+enum State<K: Meta + Clone> {
+    /// Empty state, awaiting a LIST
+    Empty,
+    /// LIST complete, can start watching
+    InitListed { resource_version: String },
+    /// Watching, can awaited stream (But on desync, move back to Empty)
+    Watching {
+        resource_version: String,
+        stream: BoxStream<'static, Result<WatchEvent<K>>>,
+    },
+}
+```
+
+the last magic there is just "a stream of WatchEvent results of type K", put inside a box on the heap.
+
 ### Reflector
-Builds on top of watcher and adds a store. Move ensures no use after construction. Writer disappears. No weird contracts in godoc. Enforce it in the code.
+Builds on top of watcher and adds a store.
+
+```rust
+let cms: Api<ConfigMap> = Api::namespaced(client, &namespace);
+
+let store = reflector::store::Writer::<ConfigMap>::default();
+let reader = store.as_reader();
+let rf = reflector(store, watcher(cms, lp));
+```
+
+Move ensures no use after construction. Writer disappears. No weird contracts in godoc. Enforce it in the code.
+
+what is a reflector?
+
+```rust
+pub fn reflector<K: Meta + Clone, W: Stream<Item = Result<watcher::Event<K>>>>(
+    mut store: store::Writer<K>,
+    stream: W,
+) -> impl Stream<Item = W::Item> {
+    stream.inspect_ok(move |event| store.apply_watcher_event(event))
+}
+```
 
 ### Controller
-The big one...
+Controller is a system that calls your reconciler with events as configured.
+You define 2 fns. One where you write idempotent (not going to talk about how to write resilient controllers, all normal advice (kbuilder etc) applies).
+Second one is an error handler. You might want to check every error dilligently within the reconciler, but you can also just use `?`.
 
-### conditions..
-https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L1367
+```rust
+async fn reconcile(g: ConfigMapGenerator, ctx: Context<()>) -> Result<ReconcilerAction, Error> {
+    // TODO: reconcile
+    Ok(ReconcilerAction {
+        requeue_after: Some(Duration::from_secs(300)),
+    })
+}
+fn error_policy(_error: &Error, ctx: Context<()>) -> ReconcilerAction {
+    // TODO: handle non-Oks from reconcile
+    ReconcilerAction {
+        requeue_after: Some(Duration::from_secs(60)),
+    }
+}
+```
+
+if you have those, then it's just hooking up events and contexts:
+
+```rust
+async fn main() -> Result<(), kube::Error> {
+    let client = Client::try_default().await?;
+    let context = Context::new(()); // bad empty context - put client in here
+    let cmgs = Api::<ConfigMapGenerator>::all(client.clone());
+    let cms = Api::<ConfigMap>::all(client.clone());
+    Controller::new(cmgs, ListParams::default())
+        .owns(cms, ListParams::default())
+        .run(reconcile, error_policy, context)
+        .await;
+    Ok(())
+}
+```
+
+should remind you a bit of controller-runtime. heavily inspired (got help).
 
 ## Building Controllers
-not rehashing best practices. most advice from kubebuilder / controller-runtime applies. reconcile needs to be idempotent, check state of the world before you redo all the work on a duplicate event. use server side apply.
-
-async/streams/tokio/web frameworks/metrics/tracing that makes writing controllers in rust very enjoyable. THOUGH WITH CAVEAT;
+not rehashing best practices. most advice from kubebuilder / controller-runtime applies. reconcile needs to be idempotent, check state of the world before you redo all the work on a duplicate event. use server side apply. use finalizers to gc.
 
 ## Examples
-Mention streams need to be polled.
-Mention boxing.
+No scaffolding here. Choose your own dependencies.
+Web frameworks?
+- actix
+- warp
+- rocket
 
-## Caveats
-Rough edges. Testing story (can be done now with streams).
+metrics libraries, logging libraries, tracing libraries,
+- prometheus
+- tracing (#[instrument] -> spans! (part of tokio))
+- (tracing has log exporters, so just start with tracing, want jaeger anyway)
+- sentry
+
+ultimately, not going to dictate anything and put it inside an opinionated framework.
+
+link to controller-rs and version-rs.
