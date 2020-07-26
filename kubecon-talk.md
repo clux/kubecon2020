@@ -161,8 +161,133 @@ The one in `k8s-openapi` is actually slightly more general, and allows parametri
 
 We can only really do useful ops on top of objects that have `ObjectMeta`, so theres' slightly more indirection to actually account for this if you look at our source. But the concept is fundamentally; we have a trait to tell us how to get metadata.
 
-### Two root traits - what can we do
-Well, let's try to replicate the object model first.
+### Resource struct
+Got two root traits. Let's build a dynamic api on top of them.
+
+```rust
+#[derive(Clone, Debug)]
+pub struct Resource {
+    pub api_version: String,
+    pub group: String,
+    pub kind: String,
+    pub version: String,
+    pub namespace: Option<String>,
+}
+```
+
+You may note that this is basically a dynamic version of the `Resource` trait, but it allows carrying the dynamic namespace property and can be instantiated at runtime from an arbitrary object (necessary for CRDs).
+
+For CRDs we can create this manually, but for existing openapi structs we can implement it automatically with trait constrait:
+
+```rust
+impl Resource {
+    pub fn namespaced<K: k8s_openapi::Resource>(ns: &str) -> Self {
+        Self {
+            api_version: K::API_VERSION.to_string(),
+            kind: K::KIND.to_string(),
+            group: K::GROUP.to_string(),
+            version: K::VERSION.to_string(),
+            namespace: Some(ns.to_string()),
+        }
+    }
+}
+```
+
+Note that this does not require `Resource` to implement the trait, it just needs it for that quick constructor.
+
+We can also then the function that dictates all of k8s urls on top of this struct:
+
+```rust
+impl Resource {
+    fn make_url(&self) -> String {
+        let ns = self.namespace.as_ref().map(|n| format!("namespaces/{}/", n));
+        format!(
+            "/{group}/{api_version}/{namespaces}{resource}",
+            group = if self.group.is_empty() { "api" } else { "apis" },
+            api_version = self.api_version,
+            namespaces = ns.unwrap_or_default(),
+            resource = to_plural(&self.kind.to_ascii_lowercase()),
+        )
+    }
+}
+```
+
+CAVEAT: due to limitation of the trtait: load-bearing pluralize.
+phrase i had never believed i had to use to describe software architecture, let alone from my own designs, but here we are.
+
+## Dynamic API
+Now that we have a resource -> url mappers. Let's create a dynamic API.
+
+```rust
+impl Resource {
+    pub fn create(&self, pp: &PostParams, data: Vec<u8>) -> Result<Request<Vec<u8>>> {
+        let base_url = self.make_url() + "?";
+        let mut qp = url::form_urlencoded::Serializer::new(base_url);
+        if pp.dry_run {
+            qp.append_pair("dryRun", "All");
+        }
+        let urlstr = qp.finish();
+        let req = http::Request::post(urlstr);
+        req.body(data).map_err(Error::HttpError)
+    }
+}
+```
+This is something similar to other language clients. Bytes come in, go through url mapper, bytes come out.
+
+Of course, this isn't really what we want. We don't want to be interjecting at every point of the way to try to deserialize a bytestream into a concrete type.
+
+What we really want, is automatic serialization of an instantiated object, and automatic deserialization of the response type into the correct object.
+
+### Api<K>
+
+```rust
+pub struct Api<K> {
+    resource: Resource,
+    client: Client,
+    phantom: PhantomData<K>,
+}
+
+let api: Api<Pod> = Api::namespaced(client, ns);
+```
+
+For that we our first truly generic type. It's a wrapper around a resource, and we put a copy of a http client inside of it, along with an empty marker of what type it's for.
+
+### Api<K> where K: Metadata
+
+```rust
+impl<K> Api<K>
+where K: Clone + Deserialize + Metadata,
+{
+    pub async fn create(&self, pp: &PostParams, data: &K) -> Result<K>
+    where K: Serialize,
+    {
+        let bytes = serde_json::to_vec(&data)?;
+        let req = self.resource.create(&pp, bytes)?;
+        self.client.request::<K>(req).await
+    }
+}
+```
+
+By using a generic type `K` for a kubernetes object that implements our k8s-openapi traits + some serialization traits, we can actually generate all those methods you saw in client-go across all types with a single blanket impl.
+
+#### Broken: spec/status
+
+```rust
+impl<K> Api<K>
+where
+    K: Clone + DeserializeOwned,
+{
+    pub async fn patch_status(&self, name: &str, pp: &PatchParams, patch: Vec<u8>) -> Result<K> {
+        let req = self.resource.patch_status(name, &pp, patch)?;
+        self.client.request::<K>(req).await
+    }
+}
+```
+
+Remember how we couldn't rely on spec/status? Well, this means that we can't take a generic `Status` type atm. You have to supply something you serialize yourself, and hope wait for kubernetes to validate your object.
+
+
+Wait, why? Well, let's try to replicate the object model first.
 
 #### Broken: Object<Spec, Status>
 Presumably many of you have seen this representation.
@@ -270,111 +395,6 @@ it's an easy assumption to make, but it's just one prominent example of many
 and it leads you down a very uneasy road of not being able to assume anything.
 
 so in general, we have to write awkward code and unpack optionals -_-
-
-### Resource
-Show `Resource`. Note basically a copy of data that's in the `Resource` trait + the dynamic property of what namespace it lives in (if it's a namespaced resource).
-
-```rust
-#[derive(Clone, Debug)]
-pub struct Resource {
-    pub api_version: String,
-    pub group: String,
-    pub kind: String,
-    pub version: String,
-    pub namespace: Option<String>,
-}
-```
-
-can create manually, or instant win ctor (assuming )
-
-```rust
-impl Resource {
-    pub fn namespaced<K: k8s_openapi::Resource>(ns: &str) -> Self {
-        Self {
-            api_version: K::API_VERSION.to_string(),
-            kind: K::KIND.to_string(),
-            group: K::GROUP.to_string(),
-            version: K::VERSION.to_string(),
-            namespace: Some(ns.to_string()),
-        }
-    }
-}
-```
-
-can also define the function that dictates all of k8s urls:
-
-```rust
-impl Resource {
-    fn make_url(&self) -> String {
-        let ns = self.namespace.as_ref().map(|n| format!("namespaces/{}/", n));
-        format!(
-            "/{group}/{api_version}/{namespaces}{resource}",
-            group = if self.group.is_empty() { "api" } else { "apis" },
-            api_version = self.api_version,
-            namespaces = ns.unwrap_or_default(),
-            resource = to_plural(&self.kind.to_ascii_lowercase()),
-        )
-    }
-}
-```
-
-CAVEAT: load-bearing pluralize.
-phrase i had never believed i had to use to describe software architecture, let alone from my own designs, but here we are.
-
-### Urls => PatchParams/CreateParams (types.go)
-Remember when I mentioned all the structs in types.go? These are some of thne few structs we define in kube-rs. Can be used to create:
-
-## Dynamic API
-Show resource.rs converting into bytestream.
-Of course, this isn't really what we want. We don't want to be interjecting at every point of the way to try to deserialize a bytestream into a concrete type.
-
-```rust
-impl Resource {
-    pub fn create(&self, pp: &PostParams, data: Vec<u8>) -> Result<Request<Vec<u8>>> {
-        let base_url = self.make_url() + "?";
-        let mut qp = url::form_urlencoded::Serializer::new(base_url);
-        if pp.dry_run {
-            qp.append_pair("dryRun", "All");
-        }
-        let urlstr = qp.finish();
-        let req = http::Request::post(urlstr);
-        req.body(data).map_err(Error::HttpError)
-    }
-}
-```
-
-### Api<K> where K: Metadata
-Show how to generate all those methods you saw in client-go across all types with a blanket impl.
-
-```rust
-impl<K> Api<K>
-where K: Clone + Deserialize + Metadata,
-{
-    pub async fn create(&self, pp: &PostParams, data: &K) -> Result<K>
-    where K: Serialize,
-    {
-        let bytes = serde_json::to_vec(&data)?;
-        let req = self.resource.create(&pp, bytes)?;
-        self.client.request::<K>(req).await
-    }
-}
-```
-
-#### Broken: spec/status
-
-```rust
-impl<K> Api<K>
-where
-    K: Clone + DeserializeOwned,
-{
-    pub async fn patch_status(&self, name: &str, pp: &PatchParams, patch: Vec<u8>) -> Result<K> {
-        let req = self.resource.patch_status(name, &pp, patch)?;
-        self.client.request::<K>(req).await
-    }
-}
-```
-
-Remember how we couldn't rely on spec/status? Well, this means that we can't take a generic `Status` type atm. You have to supply something you serialize yourself, and hope wait for kubernetes to validate your object.
 
 ### In general: Lean on types
 trying to catch errors with type safety rather than --pattern and passive code generation (like kubebuilder)
