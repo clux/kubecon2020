@@ -8,7 +8,9 @@ We'll talk a little bit about how rust, with its richer type system, gives us th
 
 But in the mean time; this is still going to be a very positive talk. Yes, there are some broken invariants, but regardless, kubernetes is remarkably consistent in its api despite shortcomings of the language. And we'll show some examples of this from source.
 
-We'll also touch on a bit of async api design in rust during the process of modelling the api with rust generics. Async rust was only properly released about a year ago, and the rust ecosystem has consequently seen enormous advances in this year. So if you're not up to speed, you'll at least see some patterns in this talk.
+We'll also touch on a bit of async api design in rust during the process of modelling the api with generics. Async rust was only properly released about a year ago, and the rust ecosystem has consequently seen enormous advances in this year. So if you're not up to speed, you'll at least see some patterns in this talk.
+
+(NOTE: i'll try to use "WE" and "OUR" for the needs of kube-rs)
 
 ## Kubernetes
 Let's talk about what kubernetes provides.
@@ -112,18 +114,19 @@ oh, and since these objects are frequently bigger than the MTU, any client would
 so we can work with that. all apis use this and it's consistent.
 
 ## END PRAISE - CONSTRUCT AROUND IN RUST
+at this point we have actually covered all the core ideas we need to talk about this from the rust POV.
 
-## THANKS
-first a few thanks.. I'll be talking about a grab bag of different things, but from the perspective of [kube-rs](https://github.com/clux/kube-rs/).
+so i'll show a grab bag of different, slightly simplified code here, much of which are from [kube-rs](https://github.com/clux/kube-rs/), but:
 
-- Arnav Singh / @Arnavion for `k8s-openapi`
-generates rust structures from openapi schemas, plus as factoring out several traits that is then implemented for these structures
+also, and huge shoutout to:
+
+- Arnav Singh / @Arnavion - `k8s-openapi`
 the project really is the lynchpin that makes any generics possible
 
-### Resource Trait
-From `k8s-openapi`. Type system here is effectively telling you that these constants are available for every struct that implements this trait. So you just have to import the trait to be able to read these values.
+generates rust structures from openapi schemas, plus factoring out some of the consistency into a few traits that is then implemented for these structures
 
-Arnav's Codegen implements this trait for every kubernetes object
+### k8s-openapi: Resource Trait
+TL;DR: A rust trait is something you can implement for a type, and then later in generic functions, use to constrain generic input parameters to only types that have implementations for it.
 
 ```rust
 pub trait Resource {
@@ -134,10 +137,18 @@ pub trait Resource {
 }
 ```
 
-Normally traits are meant to encapsulate behaviour, but you are allowed to put in static associated constants. 
+Normally traits are meant to encapsulate behaviour, can't put dynamic data in them, but you are allowed to put in static associated constants.
+
+so we can use this to map an object to where **on** the api it lives.
 
 ### Metadata Trait
-Another one from `k8s-openapi`.
+Another one from `k8s-openapi`, a super-trait. A way to extract `ObjectMeta` from an object:
+
+```rust
+pub trait Metadata: Resource {
+    fn metadata(&self) -> &ObjectMeta;
+}
+```
 
 ```rust
 pub trait Metadata: Resource {
@@ -145,16 +156,16 @@ pub trait Metadata: Resource {
     fn metadata(&self) -> &Self::MetaType;
 }
 ```
-TODO: simple first, then Oslight complication due to metatype. TODO: objectmeta only?
 
-Tells you that every object that implements it, has a way to extract a reference to its metadata. Can configure what the metadata type `Ty` actually is, but in 99% of cases it's `ObjectMeta`, and the other is `List<T>` which uses `ListMeta`.
+The one in `k8s-openapi` is actually slightly more general, and allows parametrising the metadata types. Not super relevant, but: all listable types uses `ListMeta`, but everything else returns `ObjectMeta`
+
+We can only really do useful ops on top of objects that have `ObjectMeta`, so theres' slightly more indirection to actually account for this if you look at our source. But the concept is fundamentally; we have a trait to tell us how to get metadata.
 
 ### Two root traits - what can we do
-Let's try something naive first.
+Well, let's try to replicate the object model first.
 
 #### Broken: Object<Spec, Status>
-TODO: rephrase
-Who's heard this. A k8s object consists only of `apiVersion` + `kind`, `metadata`, `spec`, `status` structs? What people tell you it's like. Even maintainers will use this simplification.
+Presumably many of you have seen this representation.
 
 ```rust
 pub struct Object<Spec, Status> {
@@ -165,13 +176,16 @@ pub struct Object<Spec, Status> {
 }
 ```
 
-how this would look in rust. (NB: Omitting some details). Notice we can actually model this very easily. `Spec` and `Status` here are generic types and are specialized at compile time for the various invocations.
+CLAIM: A k8s object consists only `apiVersion` + `kind` (typemeta), `metadata`, `spec` and an optional `status` struct.
 
-The problem with this is that it's not in general true.
-In case you've forgottene about how these look, or used just crds for so long. Here's an awkward reminder of snowflake objects.
+You very often hear this used as way to explain the core ideas of desired vs observed state. Even maintainers will use this simplification.
+
+If we're omitting trait constraints, this is how it would look in rust. `Spec` and `Status` here are generic type parameters and are specialized at compile time for the various invocations.
+
+..but the problem with this model, is ultimately that it not true in general.
 
 ### Broken: Snowflakes
-Look at configmap (data +  binary_data). Fields at the top level.
+Here are some openapi rust structs for what I like to call snowflakes.
 
 ```rust
 pub struct ConfigMap {
@@ -182,7 +196,7 @@ pub struct ConfigMap {
 }
 ```
 
-similar story for secret:
+Look at configmap (data +  binary_data). Fields at the top level.
 
 ```rust
 pub struct Secret {
@@ -194,6 +208,8 @@ pub struct Secret {
 }
 ```
 
+similar story for secret
+
 ```rust
 pub struct ServiceAccount {
     pub metadata: ObjectMeta,
@@ -202,11 +218,9 @@ pub struct ServiceAccount {
     pub secrets: Option<Vec<ObjectReference>>,
 }
 ```
-(no spec, automount bool)
 
-tons more `Endpoint` (subsets vec), `Role` (rules obj), `RoleBinding` (subjects + roleRef).
-
-and the wtf struct `Event`, with 15 random fields:
+..and serviceaccount. just a like 30 character long bool at the top level.
+...tons more `Endpoint` (subsets vec), `Role` (rules obj), `RoleBinding` (subjects + roleRef).
 
 ```rust
 pub struct Event {
@@ -228,32 +242,34 @@ pub struct Event {
 }
 ```
 
-The core objects really cause a lot of trouble. Can't rely on SPEC/STATUS (TODO: gets us into trouble for api later).
+or more amusingly, `Event`, with 15 at the root.
 
-
-=> if we can't rely on spec/status, what about metadata props?
+### What can we rely on?
+So the core objects really cause a lot of trouble. Can't rely on SPEC/STATUS.
+If we can't even rely on that..just how much of metadata can we rely on?
 
 #### Broken: Optional metadata
 screenshot code with the +optional... in pod?
 https://github.com/kubernetes/api/blob/master/core/v1/types.go#L3667-L3686
 ...how? we said we had that guarantee?
 
-we think this is because `patch` requests that allow sending empty metadata in the body (only acts on spec/status (dep on what you patch), name already inferrable from the url).
+we basically only see this as user input to `patch` requests that allow sending almost completely blank objects (and only spec or status, say). works because name of obj already inferrable from the url.
 
 so this is one we deliberately disobey.
-because it makes it so awkward to unwrap something that has to be there (except in weird manual stuff you write yourself)
-
-but in general, have to obey all optionals...:
+because it makes it so awkward to unwrap something that has to be there
 
 #### Broken: Optional names
-even though a resource having a name inside a namespace is a fundamental idea
+more like that? here's another property that feels mandatory: `metadata.name`
+even though a resource having a name is a fundamental req for a get request:
 
 metadata.name optional (`generatename` mechanism)
 https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L117-L118
 makes sense, but now every clients now have to assume non-null
-it's an easy assumption to make, but it's a prominent example of many
-and it leads you down a very uneasy road having to unwrap every option
 
+it's an easy assumption to make, but it's just one prominent example of many
+and it leads you down a very uneasy road of not being able to assume anything.
+
+so in general, we have to write awkward code and unpack optionals -_-
 
 ### Resource
 Show `Resource`. Note basically a copy of data that's in the `Resource` trait + the dynamic property of what namespace it lives in (if it's a namespaced resource).
@@ -343,6 +359,22 @@ where K: Clone + Deserialize + Metadata,
     }
 }
 ```
+
+#### Broken: spec/status
+
+```rust
+impl<K> Api<K>
+where
+    K: Clone + DeserializeOwned,
+{
+    pub async fn patch_status(&self, name: &str, pp: &PatchParams, patch: Vec<u8>) -> Result<K> {
+        let req = self.resource.patch_status(name, &pp, patch)?;
+        self.client.request::<K>(req).await
+    }
+}
+```
+
+Remember how we couldn't rely on spec/status? Well, this means that we can't take a generic `Status` type atm. You have to supply something you serialize yourself, and hope wait for kubernetes to validate your object.
 
 ### In general: Lean on types
 trying to catch errors with type safety rather than --pattern and passive code generation (like kubebuilder)
@@ -544,4 +576,8 @@ ultimately, not going to dictate anything and put it inside an opinionated frame
 link to controller-rs and version-rs.
 
 ## Caveats
-Rough edges. Api library (kube) quite stable, but kube-runtime is pretty new still.
+Rough edges. Api library (kube) quite stable, but kube-runtime is pretty new still. Show users and testimonials. Kruslet.
+
+
+## TODOS
+broken slap-on - so we reveal it part way through?
