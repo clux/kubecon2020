@@ -2,20 +2,19 @@
 ## INTRO
 Hey. I'm Eirik aka clux on github and am one of the main maintainers on kube-rs.
 
-Today, talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, is either enforced successfully through consistency, or it's broken.
+Today, talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, are generally enforced through consistency and manual code-generation steps.
 
-We'll talk a little bit about how a richer type system - like rust's - gives us more a lot more for free in this regard. But for kubernetes; it's not be a magic bullet. Any broken invariants on the Go side would still need to be respected in rust land.
+We'll talk a little bit about how rust, with its richer type system, gives us the same consistency for free, and lets us model the api easily. Still, it's not a magic bullet. Any broken invariants on the Go side would still need to be respected in rust land. The hope is that when Go gets generics, a lot of these assumptions get locked down properly.
 
-But this is still going to be a pretty positive talk. Yes, some invariants are broken, but regardless, kubernetes is remarkably consistent in its api despite shortcomings of the language. And I'll show some examples of this.
+But in the mean time; this is still going to be a very positive talk. Yes, there are some broken invariants, but regardless, kubernetes is remarkably consistent in its api despite shortcomings of the language. And we'll show some examples of this from source.
 
-Finally, this is going to serve as a bit of a high level view into rust async application design....somethingsomething (which was released on stable in just about a year ago - so there's been tons of advancements there). IMO, it's now in a really good place, library ecosystem is great and starting to properly stabilize. However, the learning curve is ever present. And there are some rough edges.
+We'll also touch on a bit of async api design in rust during the process of modelling the api with rust generics. Async rust was only properly released about a year ago, and the rust ecosystem has consequently seen enormous advances in this year. So if you're not up to speed, you'll at least see some patterns in this talk.
 
 ## Kubernetes
-Let's talk about kubernetes provides.
+Let's talk about what kubernetes provides.
 
-## THE GOOD PARTS
-### apimachinery types.go
-So let's dive into the most important file of all. Meta types in apimachinery.
+### meta types.go in apimachinery
+So let's dive into the most important file of all.
 
 TypeMeta.
 https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L41-L56
@@ -234,9 +233,9 @@ The core objects really cause a lot of trouble.
 #### Broken: Optional names
 even though a resource having a name inside a namespace is a fundamental idea
 
-metadata.name optional (yes, because of `generatename`..)
+metadata.name optional (`generatename` mechanism)
 https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L117-L118
-so the consequence of +optional => every clients now have to assume non-null
+makes sense, but now every clients now have to assume non-null
 it's an easy assumption to make, but it's a prominent example of many
 and it leads you down a very uneasy road having to unwrap every option
 
@@ -364,16 +363,25 @@ When you `cargo build`, these procedural macros generate code which is then used
 
 ## CustomResource
 ```rust
-#[derive(CustomResource, Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(CustomResource, Serialize, Deserialize, Clone)]
 #[kube(group = "clux.dev", version = "v1", kind = "Foo", namespaced)]
 #[kube(status = "FooStatus")
-//#[kube(apiextensions = "v1beta1")] // kubernetes <= 1.16
 pub struct MyFoo {
     name: String,
     info: Option<String>,
 }
 ```
 
+### SKIP: Broken: Conditions
+while we are talking about conditions
+https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L1367
+sits inside a vector, so they all look the same, so you have to always filter the conditions for the type you want. presumably so that `kubectl describe` can display all conditions in one nice table.
+
+but, we could deal with that. What we cannot deal with is that you cannot really `patch_status` to update particular condition entry.
+
+none of the original patch types even work (strategic might have, but not supported on crds). so you need at least server side apply to even use conditions.
+
+SKIP DUE TO https://github.com/clux/kube-rs/issues/43 FIXED IN SS APPLY?
 
 ### Watch
 Mention hard parts briefly. Chunking. Async. impl Stream == async iterator.
@@ -384,19 +392,8 @@ mention many issues, stale rvs, relisting required from a client re-watch every 
 
 then the amount of data. tried using a node informer? sooo much noise. FULL 10k data every 5s because the conditions in its status object contain a last updated timestamp...
 
-### Broken: Conditions
-while we are talking about conditions
-https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L1367
-sits inside a vector, so they all look the same, so you have to always filter the conditions for the type you want. presumably so that `kubectl describe` can display all conditions in one nice table.
-
-but, we could deal with that. What we cannot deal with is that you cannot really `patch_status` to update particular condition entry.
-
-none of the original patch types even work (strategic might have, but not supported on crds). so you need at least server side apply to even use conditions.
-
-TODO: maybe skip this section, and maybe revisit https://github.com/clux/kube-rs/issues/43
-
-### watchevent is weird for bookmarks
-does not pack object inside
+### WatchEvent
+Then WatchEvent itself. Remember how watch events all packed an object inside of it? We can model this in rust with generic enums:
 
 ```rust
 #[derive(Deserialize, Serialize, Clone)]
@@ -409,6 +406,17 @@ pub enum WatchEvent<K> {
     Error(ErrorResponse),
 }
 ```
+
+The serde tags here tells serde that the values of the enum variants are put inside on the object key, and the enum variant name on a key call tag (which are sent/recvd as uppercase - to match go convention). so this is actually really nice.
+
+that's how that would look. however, this is one of those small cases where kubernetes actually pulls out all the optionals.
+
+```json
+{"type":"BOOKMARK","object":{"kind":"Pod","apiVersion":"v1","metadata":{"resourceVersion":"3845","creationTimestamp":null},"spec":{"containers":null},"status":{}}}
+```
+
+no spec, no name, kind Pod.
+so that actually validates `metadata.name` being optional (even if we didn't have a generatename mechanism).
 
 ```rust
 #[derive(Deserialize, Serialize, Clone)]
@@ -533,3 +541,6 @@ metrics libraries, logging libraries, tracing libraries,
 ultimately, not going to dictate anything and put it inside an opinionated framework.
 
 link to controller-rs and version-rs.
+
+## Caveats
+Rough edges. Api library (kube) quite stable, but kube-runtime is pretty new still.
