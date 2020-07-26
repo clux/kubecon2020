@@ -250,7 +250,7 @@ pub struct Api<K> {
 let api: Api<Pod> = Api::namespaced(client, ns);
 ```
 
-For that we our first truly generic type. It's a wrapper around a resource, and we put a copy of a http client inside of it, along with an empty marker of what type it's for.
+For that we our first truly generic type. It's a wrapper around a resource, and we put a copy of a http client inside of it, along with an empty marker of what type it's for. But notice there were no constraints on `K` here.
 
 ### Api<K> where K: Metadata
 
@@ -268,9 +268,10 @@ where K: Clone + Deserialize + Metadata,
 }
 ```
 
-By using a generic type `K` for a kubernetes object that implements our k8s-openapi traits + some serialization traits, we can actually generate all those methods you saw in client-go across all types with a single blanket impl.
+By adding constraints on `K` we can implement `client-go` like methods on this ad-hoc `Api` struct across all types openapi generated types with a single blanket impl.
 
-#### Broken: spec/status
+<!--
+#### SKIIIP Broken: spec/status
 
 ```rust
 impl<K> Api<K>
@@ -285,7 +286,6 @@ where
 ```
 
 Remember how we couldn't rely on spec/status? Well, this means that we can't take a generic `Status` type atm. You have to supply something you serialize yourself, and hope wait for kubernetes to validate your object.
-
 
 Wait, why? Well, let's try to replicate the object model first.
 
@@ -395,36 +395,68 @@ it's an easy assumption to make, but it's just one prominent example of many
 and it leads you down a very uneasy road of not being able to assume anything.
 
 so in general, we have to write awkward code and unpack optionals -_-
+-->
+
+
+### TODO: Show api trait signatures?
 
 ### In general: Lean on types
-trying to catch errors with type safety rather than --pattern and passive code generation (like kubebuilder)
+Lot of benefits to leaning on types. You write things once and it is used by everything. We want code to take effect immediately rather than have to step through a code generation pattern, and then commit generated code to a repo.
+
+(USER FACING CODE STARTS HERE)
 
 ## Code Generation
+But that's not to say we don't do code generation. Rust has procedural macros, which lets us do code generation at compile time with `cargo build` and this code is used in the later stages of the same compilation. So that first class support for code generation basically eliminates a whole class of errors where you are operating on a stale version of generated code, because the compiler disallows that possibility.
+
 ### Serialize
+
 ```rust
 #[derive(Serialize, Deserialize)]
-pub struct MyFoo {
+#[serde(rename_all = "camelCase")]
+pub struct FooSpec {
     name: String,
-    info: Option<String>,
+    is_bad: Option<String>,
 }
 ```
-tons of extra things serde can do, similar to go `serde(rename_all = "camelCase")`
 
-So we can do all the necessary code generation that doesn't completely fit within a strict typesystem with procedural macros. They are effectively a way to generate code, but it's a first class citizen of cargo; rust's build system and package manager.
+Just the basic derives that almost everyone uses for `Serialize` and `Deserialize` from the `serde` library. This gives you serialization and deserialization methods that all follow standard traits.
 
-When you `cargo build`, these procedural macros generate code which is then used in the main compilation stage. So that whole class of errors where you are operating on a stale version of generated code, can just disappear.
+In practice, you often end up writing much of the same annotations as you would with go's json encoding to like distinguish casings of your code and disk format, but there's type safety around it. Not just comments in backticks.
 
 ## CustomResource
+
 ```rust
 #[derive(CustomResource, Serialize, Deserialize, Clone)]
 #[kube(group = "clux.dev", version = "v1", kind = "Foo", namespaced)]
 #[kube(status = "FooStatus")
-pub struct MyFoo {
+pub struct FooSpec {
     name: String,
     info: Option<String>,
 }
 ```
 
+And we can also make our own derive rules and options for it. Here we are using kube's `CustomResource` proc-macro, and we are telling kube what the resource parameters are (group, version, kind). This will create all the code around a custom resource.
+
+We've tried to mimic some of the usability of kubebuilder here, but without any of the stored generated code.
+
+### Example: Using a CRD
+
+```rust
+    let crds: Api<CustomResourceDefinition> = Api::all(client);
+    crds.create(&pp, &Foo::crd()).await;
+    let foos: Api<Foo> = Api::namespaced(client, &namespace);
+
+    let f = Foo::new("eirik-example", FooSpec {
+        name: "i am a foo crd instance".into(),
+        info: None
+    });
+    let o = foos.create(&pp, &f2).await?;
+```
+
+The generated `Foo` type (containing metadata, spec, pointing to your spec, etc), also has a `crd` method. So you can literally just apply it and start using it in like `main`.
+
+
+<!--
 ### SKIP: Broken: Conditions
 while we are talking about conditions
 https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L1367
@@ -435,18 +467,24 @@ but, we could deal with that. What we cannot deal with is that you cannot really
 none of the original patch types even work (strategic might have, but not supported on crds). so you need at least server side apply to even use conditions.
 
 SKIP DUE TO https://github.com/clux/kube-rs/issues/43 FIXED IN SS APPLY?
+-->
 
 ### Watch
-Mention hard parts briefly. Chunking. Async. impl Stream == async iterator.
-..but re-list
+Talked about basic crud operations (same pricinple as `create`).
+One thing that is fundamentally different is watch. Watch is chunked. It's async. And fn that does watch will return `-> impl Stream<Result<...>`
+Stream == async iterator.
 
 ### Broken: Watch
-mention many issues, stale rvs, relisting required from a client re-watch every <300s.
+Nice signature from that, BUT. Watch is awkward. ResourceVersions integers exposed via etcd, that you have to return on every watch call to tell k8s where you left off.
 
-then the amount of data. tried using a node informer? sooo much noise. FULL 10k data every 5s because the conditions in its status object contain a last updated timestamp...
+Sometimes these RVs are stale, and if you are building a state cache like a reflector, you have to re-list and get all the state back for every object in the system if you get desynchronized. Before bookmarks, that was very likely to happen.
+
+Watch calls also can't reliably stay open for more than 5 minutes, so you have to keep issuing this watch call at least that frequently.
+
+and finally, the obscene amount of data this can return. Tried using a node informer? insane amount of noise. FULL 10k data every 5s because the conditions in its status object contain a last updated timestamp...
 
 ### WatchEvent
-Then WatchEvent itself. Remember how watch events all packed an object inside of it? We can model this in rust with generic enums:
+That said, the `WatchEvent` itself is nice. Remember how watch events all packed an object inside of it? We can model this in rust with generic enums:
 
 ```rust
 #[derive(Deserialize, Serialize, Clone)]
@@ -455,7 +493,7 @@ pub enum WatchEvent<K> {
     Added(K),
     Modified(K),
     Deleted(K),
-    Bookmark(K),
+    Bookmark(Bookmark),
     Error(ErrorResponse),
 }
 ```
@@ -471,17 +509,6 @@ that's how that would look. however, this is one of those small cases where kube
 no spec, no name, kind Pod.
 so that actually validates `metadata.name` being optional (even if we didn't have a generatename mechanism).
 
-```rust
-#[derive(Deserialize, Serialize, Clone)]
-#[serde(tag = "type", content = "object", rename_all = "UPPERCASE")]
-pub enum WatchEvent<K> {
-    Added(K),
-    Modified(K),
-    Deleted(K),
-    Bookmark(Bookmark),
-    Error(ErrorResponse),
-}
-```
 
 ## Runtime
 How to build on top of watch and the api. Well we got to watch continously, but not longer than 5 minutes, propagate all user errors, retry/re-list on desync errors, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
