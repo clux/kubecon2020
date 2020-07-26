@@ -2,9 +2,9 @@
 ## INTRO
 Hey. I'm Eirik aka clux on github and am one of the main maintainers on kube-rs.
 
-Today, talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, are generally enforced through consistency and manual code-generation steps.
+Today, talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, _the properties_ are generally enforced through consistency and manual code-generation steps.
 
-We'll talk a little bit about how rust, with its richer type system, gives us the same consistency for free, and lets us model the api easily. Still, it's not a magic bullet. Any broken invariants on the Go side would still need to be respected in rust land. The hope is that when Go gets generics, a lot of these assumptions get locked down properly.
+We'll talk a little bit about how rust, with its richer type system, gives us the same consistency for free, and lets us model the api easily. Still, it's not a magic bullet. Any broken invariants on the Go side would still need to be respected in rust land.
 
 But in the mean time; this is still going to be a very positive talk. Yes, there are some broken invariants, but regardless, kubernetes is remarkably consistent in its api despite shortcomings of the language. And we'll show some examples of this from source.
 
@@ -59,7 +59,7 @@ because people recognised that you **have** to enforce some of these assumptions
 
 now, this isn't generics, but it's consistency.
 for each, kind, the specific structs are specialized manually
-via code generation - but the source is present regardless
+via code generation - but the source is present in repo regardless
 
 and it's not the only file generated.
 informers logic for every type is also there
@@ -90,13 +90,13 @@ https://kubernetes.io/docs/reference/using-api/api-concepts/#standard-api-termin
 though things start to break down a little bit here even though this is straight out of the "Standard API Terminology" page on the kubernetes website.
 
 ### Broken: empty api group
-because this does not hold for pods, nodes, namespaces, and any other type in the core object list. they have a different url that starts with `api` rather than `apis`.
+because this does not hold for pods, nodes, namespaces (TODO: more ex), and any other type in the core object list. they have a different url that starts with `api` rather than `apis`.
 
 ```
 GET /api/v1/pods
 ```
 
-but ok that's fine, we can strip a slash if the group is empty and then change change apis to api...K.
+but that's a relatively minor inconsistency, we can strip a slash if the group is empty and then change change apis to api...K.
 
 ## WatchEvents
 WatchEvents are what you received when you perform a watch call, aka a GET on a root resource api. With watch parameters in the querystring. When you use watch, you effectively set a timeout, and you'll get a chunked response, of NEWLINE delimited json, each line containg a wrapped verision of your object
@@ -120,8 +120,8 @@ first a few thanks.. I'll be talking about a grab bag of different things, but f
 generates rust structures from openapi schemas, plus as factoring out several traits that is then implemented for these structures
 the project really is the lynchpin that makes any generics possible
 
-### Metadata
-Resource trait. Type system here is effectively telling you that these constants are available for every struct that implements this trait. So you just have to import the trait to be able to read these values.
+### Resource Trait
+From `k8s-openapi`. Type system here is effectively telling you that these constants are available for every struct that implements this trait. So you just have to import the trait to be able to read these values.
 
 Arnav's Codegen implements this trait for every kubernetes object
 
@@ -136,15 +136,16 @@ pub trait Resource {
 
 Normally traits are meant to encapsulate behaviour, but you are allowed to put in static associated constants. 
 
-### Resource
-Another one from `k8s-openapi`. Metadata trait.
+### Metadata Trait
+Another one from `k8s-openapi`.
 
 ```rust
 pub trait Metadata: Resource {
-    type Ty;
-    fn metadata(&self) -> &Self::Ty;
+    type MetaType;
+    fn metadata(&self) -> &Self::MetaType;
 }
 ```
+TODO: simple first, then Oslight complication due to metatype. TODO: objectmeta only?
 
 Tells you that every object that implements it, has a way to extract a reference to its metadata. Can configure what the metadata type `Ty` actually is, but in 99% of cases it's `ObjectMeta`, and the other is `List<T>` which uses `ListMeta`.
 
@@ -152,6 +153,7 @@ Tells you that every object that implements it, has a way to extract a reference
 Let's try something naive first.
 
 #### Broken: Object<Spec, Status>
+TODO: rephrase
 Who's heard this. A k8s object consists only of `apiVersion` + `kind`, `metadata`, `spec`, `status` structs? What people tell you it's like. Even maintainers will use this simplification.
 
 ```rust
@@ -163,19 +165,20 @@ pub struct Object<Spec, Status> {
 }
 ```
 
-how this would look in rust. Notice we can actually model this very easily. `Spec` and `Status` here are generic types and are specialized at compile time for the various invocations.
+how this would look in rust. (NB: Omitting some details). Notice we can actually model this very easily. `Spec` and `Status` here are generic types and are specialized at compile time for the various invocations.
 
 The problem with this is that it's not in general true.
+In case you've forgottene about how these look, or used just crds for so long. Here's an awkward reminder of snowflake objects.
 
 ### Broken: Snowflakes
 Look at configmap (data +  binary_data). Fields at the top level.
 
 ```rust
 pub struct ConfigMap {
+    pub metadata: ObjectMeta,
     pub binary_data: Option<BTreeMap<String, ByteString>>,
     pub data: Option<BTreeMap<String, String>>,
     pub immutable: Option<bool>,
-    pub metadata: ObjectMeta,
 }
 ```
 
@@ -183,9 +186,9 @@ similar story for secret:
 
 ```rust
 pub struct Secret {
+    pub metadata: ObjectMeta,
     pub data: Option<BTreeMap<String, ByteString>>,
     pub immutable: Option<bool>,
-    pub metadata: ObjectMeta,
     pub string_data: Option<BTreeMap<String, String>>,
     pub type_: Option<String>,
 }
@@ -193,9 +196,9 @@ pub struct Secret {
 
 ```rust
 pub struct ServiceAccount {
+    pub metadata: ObjectMeta,
     pub automount_service_account_token: Option<bool>,
     pub image_pull_secrets: Option<Vec<LocalObjectReference>>,
-    pub metadata: ObjectMeta,
     pub secrets: Option<Vec<ObjectReference>>,
 }
 ```
@@ -207,6 +210,7 @@ and the wtf struct `Event`, with 15 random fields:
 
 ```rust
 pub struct Event {
+    pub metadata: ObjectMeta,
     pub action: Option<String>,
     pub count: Option<i32>,
     pub event_time: Option<MicroTime>,
@@ -214,7 +218,6 @@ pub struct Event {
     pub involved_object: ObjectReference,
     pub last_timestamp: Option<Time>,
     pub message: Option<String>,
-    pub metadata: ObjectMeta,
     pub reason: Option<String>,
     pub related: Option<ObjectReference>,
     pub reporting_component: Option<String>,
@@ -225,21 +228,10 @@ pub struct Event {
 }
 ```
 
-The core objects really cause a lot of trouble.
+The core objects really cause a lot of trouble. Can't rely on SPEC/STATUS (TODO: gets us into trouble for api later).
 
-=> can only really on metadata existing
-.. in terms of types then, how much of metadata can we rely on?
 
-#### Broken: Optional names
-even though a resource having a name inside a namespace is a fundamental idea
-
-metadata.name optional (`generatename` mechanism)
-https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L117-L118
-makes sense, but now every clients now have to assume non-null
-it's an easy assumption to make, but it's a prominent example of many
-and it leads you down a very uneasy road having to unwrap every option
-
-even worse one:
+=> if we can't rely on spec/status, what about metadata props?
 
 #### Broken: Optional metadata
 screenshot code with the +optional... in pod?
@@ -251,8 +243,17 @@ we think this is because `patch` requests that allow sending empty metadata in t
 so this is one we deliberately disobey.
 because it makes it so awkward to unwrap something that has to be there (except in weird manual stuff you write yourself)
 
+but in general, have to obey all optionals...:
 
-...let's return to building on top of this.
+#### Broken: Optional names
+even though a resource having a name inside a namespace is a fundamental idea
+
+metadata.name optional (`generatename` mechanism)
+https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L117-L118
+makes sense, but now every clients now have to assume non-null
+it's an easy assumption to make, but it's a prominent example of many
+and it leads you down a very uneasy road having to unwrap every option
+
 
 ### Resource
 Show `Resource`. Note basically a copy of data that's in the `Resource` trait + the dynamic property of what namespace it lives in (if it's a namespaced resource).
