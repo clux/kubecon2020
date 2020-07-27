@@ -399,7 +399,6 @@ pub struct Resource {
 
 notes:
 - Got two root traits. Let's build a dynamic api on top of them.
-- Don't copy paste. Canadian Aboriginal Syllabics coz reveal tried to close my html string tag.
 - You may note that this is basically a dynamic version of the `Resource` trait, but it allows carrying the dynamic namespace property and can be instantiated at runtime from an arbitrary object (helpful for CRDs).
 - For CRDs we can create this manually, with like a builder, but for existing openapi structs can get a blanket ctor with one trait constrait:
 
@@ -407,8 +406,9 @@ notes:
 ### kube-rs: Resource namespaced ctor
 
 ```rust
+use k8s_openapi::Resource as ResourceTrait;
 impl Resource {
-    pub fn namespaced<K: k8s_openapi::Resource>(ns: &str) -> Self {
+    pub fn namespaced<K: ResourceTrait>(ns: &str) -> Self {
         Self {
             api_version: K::API_VERSION.to_string(),
             kind: K::KIND.to_string(),
@@ -428,18 +428,15 @@ Notes:
 
 ```rust
 impl Resource {
-  fn make_url(&self) -> String {
-    let ns = self.namespace.as_ref()
-        .map(|n| format!("namespaces/{}/", n));
-    let plural = to_plural(&self.kind.to_ascii_lowercase());
-    format!(
-        "/{group}/{api_version}/{namespaces}{resource}",
-        group = if self.group.is_empty() {"api"}else{"apis"},
+    fn make_url(&self) -> String {
+      format!("/{group}/{api_version}/{namespaces}{resource}",
+        group = if self.group.is_empty() {"api"} else {"apis"},
         api_version = self.api_version,
-        namespaces = ns.unwrap_or_default(),
-        resource = plural,
-    )
-  }
+        resource = to_plural(&self.kind.to_ascii_lowercase()),
+        namespaces = self.namespace.as_ref()
+          .map(|n| format!("namespaces/{}/", n))
+          .unwrap_or_default())
+    }
 }
 ```
 
@@ -456,7 +453,7 @@ phrase i had never believed i had to use to describe software architecture, let 
 ```rust
 impl Resource {
     pub fn create(&self, pp: &PostParams, data: Vec<u8>)
-        -> Result<Request<Vec<u8>>>>
+        -> Result<Request<Vec<u8>>>
     {
         let base_url = self.make_url() + "?";
         let mut qp = Serializer::new(base_url);
@@ -511,7 +508,7 @@ where K: Clone + Deserialize + Metadata,
 ```
 
 notes:
-- weird syntax, generic impls, K needs to satisfy constraints
+- weird syntax? generic impls, K needs to satisfy constraints
 - K needs extra constraints for one method
 - By adding constraints on `K` we can implement `client-go` like methods on this ad-hoc `Api` struct across all types openapi generated types with a single blanket impl.
 
@@ -672,12 +669,13 @@ notes:
 - Just the basic derives that almost everyone uses for `Serialize` and `Deserialize` from the `serde` library. This gives you serialization and deserialization methods that all follow standard traits.
 - In practice, you often end up writing much of the same annotations as you would with go's json encoding to like distinguish casings of your code and disk format, but there's type safety around it. Not just comments in backticks.
 
-## CustomResource
+---
+### kube-derive: CustomResource
 
 ```rust
 #[derive(CustomResource, Serialize, Deserialize, Clone)]
-#[kube(group = "clux.dev", version = "v1", kind = "Foo", namespaced)]
-#[kube(status = "FooStatus")
+#[kube(group = "clux.dev", version = "v1", kind = "Foo")]
+#[kube(namespaced, status = "FooStatus")]
 pub struct FooSpec {
     name: String,
     info: Option<String>,
@@ -694,6 +692,7 @@ notes:
 ```rust
 let crds: Api<CustomResourceDefinition> = Api::all(client);
 crds.create(&pp, &Foo::crd()).await;
+
 let foos: Api<Foo> = Api::namespaced(client, &namespace);
 
 let f = Foo::new("eirik-example", FooSpec {
@@ -724,12 +723,16 @@ SKIP DUE TO https://github.com/clux/kube-rs/issues/43 FIXED IN SS APPLY?
 ### Watch
 
 ```rust
+impl<K> Api<K>
+where K: Clone + Deserialize + Metadata,
+
     pub async fn watch(&self, lp: &ListParams, rv: &str)
-        -> Result<impl Stream<Item = Result<WatchEvent<K>
+        -> Result<impl Stream<Item = Result<WatchEvent<K>>>>
     {
         let req = self.resource.watch(&lp, &rv)?;
         self.client.request_events::<K>(req).await
     }
+}
 ```
 
 notes:
@@ -758,7 +761,8 @@ and finally, the obscene amount of data this can return. Tried using a node info
 
 ```rust
 #[derive(Deserialize, Serialize, Clone)]
-#[serde(tag = "type", content = "object", rename_all = "UPPERCASE")]
+#[serde(tag = "type", content = "object")]
+#[serde(rename_all = "UPPERCASE")]
 pub enum WatchEvent<K> {
     Added(K),
     Modified(K),
@@ -791,20 +795,20 @@ notes:
 - however, it sets containers to `null`, which is actually against spec so openapi dependents can't actually parse this (need to raise this upstream)
 
 ---
-## Runtime
-How to build on top of watch and the api. Well we got to watch continously, but not longer than 5 minutes, propagate all user errors, retry/re-list on desync errors, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
+### kube-runtime
 
-So a huge shoutout to my other maintainer:
+- Teo K. Röijezon / @teozkr
+- Entirely `Stream` based solution
+- `watcher`, `reflector` and `controller`
 
-- Teo K. Röijezon / @teozkr who wrote kube-runtime (controller-runtime equivalent)
-
-He basically figured out an entirely Stream based solution for watchers/reflectors and controllers, and rewrote that entire module of `kube`.
-
-It's an amazing technical achievement that makes it really easy to integrate into your application.
+notes:
+- How to build on top of watch and the api. Well we got to watch continously, but not longer than 5 minutes, propagate all user errors, retry/re-list on desync errors, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
+- So a huge shoutout to my other maintainer: Teo.
+- He basically figured out an entirely Stream based solution for watchers/reflectors and controllers, and rewrote that entire module of `kube`.
+- It's an amazing technical achievement that makes it really easy to integrate into your application.
 
 ---
-### Watcher
-Informer-like. But FSM.
+### kube-runtime: watcher
 
 ```rust
 enum State<K: Meta + Clone> {
@@ -820,11 +824,12 @@ enum State<K: Meta + Clone> {
 }
 ```
 
-the last magic there is just "a stream of WatchEvent results of type K", put inside a box on the heap.
+notes:
+- Informer-like. But FSM.
+- the last magic there is just "a stream of WatchEvent results of type K", put inside a box on the heap.
 
 ---
-### Reflector
-Builds on top of watcher and adds a store.
+### kube-runtime: reflector
 
 ```rust
 let cms: Api<ConfigMap> = Api::namespaced(client, &namespace);
@@ -834,10 +839,13 @@ let reader = store.as_reader();
 let rf = reflector(store, watcher(cms, lp));
 ```
 
-Move ensures no use after construction. Writer disappears. No weird contracts in godoc. Enforce it in the code.
+notes:
+- Builds on top of watcher and adds a store
+- Move ensures no use after construction. Writer disappears. No weird contracts in godoc. Enforce it in the code.
+- what is a reflector?
 
-what is a reflector?
-
+---
+### kube-runtime: reflector
 ```rust
 pub fn reflector<K: Meta + Clone, W: Stream<Item = Result<watcher::Event<K>(mut store: store::Writer<K>, stream: W)
     -> impl Stream<Item = W::Item>
@@ -847,10 +855,7 @@ pub fn reflector<K: Meta + Clone, W: Stream<Item = Result<watcher::Event<K>(mut 
 ```
 
 ---
-### Controller
-Controller is a system that calls your reconciler with events as configured.
-You define 2 fns. One where you write idempotent (not going to talk about how to write resilient controllers, all normal advice (kbuilder etc) applies).
-Second one is an error handler. You might want to check every error dilligently within the reconciler, but you can also just use `?`.
+### kube-runtime: Controller (handlers)
 
 ```rust
 async fn reconcile(g: ConfigMapGenerator, ctx: Context<()>) -> Result<ReconcilerAction, Error> {
@@ -867,7 +872,14 @@ fn error_policy(_error: &Error, ctx: Context<()>) -> ReconcilerAction {
 }
 ```
 
-if you have those, then it's just hooking up events and contexts:
+notes:
+- Controller is a system that calls your reconciler with events as configured.
+- You define 2 fns. One where you write idempotent (not going to talk about how to write resilient controllers, all normal advice (kbuilder etc) applies).
+- Second one is an error handler. You might want to check every error dilligently within the reconciler, but you can also just use `?`.
+- if you have those, then it's just hooking up events and contexts:
+
+---
+### kube-runtime: Controller (setup)
 
 ```rust
 async fn main() -> Result<(), kube::Error> {
@@ -875,6 +887,7 @@ async fn main() -> Result<(), kube::Error> {
     let context = Context::new(()); // bad empty context - put client in here
     let cmgs = Api::<ConfigMapGenerator>::all(client.clone());
     let cms = Api::<ConfigMap>::all(client.clone());
+
     Controller::new(cmgs, ListParams::default())
         .owns(cms, ListParams::default())
         .run(reconcile, error_policy, context)
@@ -883,27 +896,41 @@ async fn main() -> Result<(), kube::Error> {
 }
 ```
 
-should remind you a bit of controller-runtime. heavily inspired (got help).
+notes:
+- should remind you a bit of controller-runtime. heavily inspired (got help).
 
 ---
 ### Building Controllers
-not rehashing best practices. most advice from kubebuilder / controller-runtime applies. reconcile needs to be idempotent, check state of the world before you redo all the work on a duplicate event. use server side apply. use finalizers to gc.
+
+- follow controller-runtime / kubebuilder best practices
+- idempotent, error resilient reconcilers
+- use server side apply
+- use finalizers
+
+notes:
+- not rehashing best practices. most advice from kubebuilder / controller-runtime applies.
+- reconcile needs to be idempotent, check state of the world before you redo all the work on a duplicate event. use server side apply. use finalizers to gc.
 
 ---
 ### Examples
-No scaffolding here. Choose your own dependencies.
-Web frameworks?
+
+Web Frameworks?
+
 - actix
 - warp
 - rocket
 
-metrics libraries, logging libraries, tracing libraries,
+Metrics libraries, logging libraries, tracing libraries,
+
 - prometheus
 - tracing (#[instrument] -> spans! (part of tokio))
 - (tracing has log exporters, so just start with tracing, want jaeger anyway)
 - sentry
 
-ultimately, not going to dictate anything and put it inside an opinionated framework.
+notes:
+- No scaffolding here. Choose your own dependencies.
+- Frameworks? You probably want one, if only to expose metrics.
+- ultimately, not going to dictate anything and put it inside an opinionated framework.
 
 link to controller-rs and version-rs.
 
