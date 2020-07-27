@@ -2,13 +2,13 @@
 ## INTRO
 Hey. I'm Eirik aka clux on github and am one of the main maintainers on kube-rs.
 
-Today, talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, _the properties_ are generally enforced through consistency and manual code-generation steps.
+Today, talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, _these properties_ are generally enforced through consistency and code-generation steps.
 
-We'll talk a little bit about how rust, with its richer type system, gives us the same consistency for free, and lets us model the api easily. Still, it's not a magic bullet. Any broken invariants on the Go side would still need to be respected in rust land.
+We'll talk about how to model the same api in rust using generics, and see that it gives us the same consistency for free. Still, it's not a magic bullet. Kubernetes is written in Go; Any broken invariants on the Go side would still need to be respected in rust land.
 
-But in the mean time; this is still going to be a very positive talk. Yes, there are some broken invariants, but regardless, kubernetes is remarkably consistent in its api despite shortcomings of the language. And we'll show some examples of this from source.
+But this is going to be a very positive talk. Yes, there are some broken invariants, but kubernetes is still remarkably consistent in its api despite shortcomings of the language. And we'll show some good examples as we go along.
 
-We'll also touch on a bit of async api design in rust during the process of modelling the api with generics. Async rust was only properly released about a year ago, and the rust ecosystem has consequently seen enormous advances in this year. So if you're not up to speed, you'll at least see some patterns in this talk.
+We'll also touch on async api design in rust during this modelling process. Async rust was only properly released about a year ago, and the rust ecosystem has consequently seen enormous advances in this year with it stable. So if you're not up to speed, you'll at least see some patterns in this talk.
 
 (NOTE: i'll try to use "WE" and "OUR" for the needs of kube-rs)
 
@@ -16,33 +16,112 @@ We'll also touch on a bit of async api design in rust during the process of mode
 Let's talk about what kubernetes provides.
 
 ### meta types.go in apimachinery
-So let's dive into the most important file of all.
+So let's dive into the arguably most important file of all.
 
-TypeMeta.
-https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L41-L56
+#### TypeMeta
+
+[types.go#L36-56](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L36-L56)
+
+```go
+type TypeMeta struct {
+    // +optional
+    Kind string `json:"kind,omitempty" protobuf:"bytes,1,opt,name=kind"`
+    // +optional
+    APIVersion string `json:"apiVersion,omitempty" protobuf:"bytes,2,opt,name=apiVersion"`
+}
+```
+
 Every object has kind + version - flattened into the root structure like `Pod`
 
-ObjectMeta.
-https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L110-L282
-Every object MUST Have metadata, and must look like this. There's OwnerReferences, labels, annotations, and finalizers that all can go in there, and they're standardised. Every object supports these.
+#### ObjectMeta
+[types.go#L108-L282](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L108-L282)
 
-List types.
-https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L914-L923
-For when you ask for a collection of items. And look at items there; a dynamic collection so this struct can be re-used.
+```go
+type ObjectMeta struct {
+    // core
+    Name string
+    GenerateName string
+    Namespace string
 
-APIResource.
-https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L999-L1032
+    // read only
+    UID types.UID
+    ResourceVersion string
+    Generation int64
+    CreationTimestamp Time
+    DeletionTimestamp *Time
+    DeletionGracePeriodSeconds *int64
+
+    // custom props props
+    Labels map[string]string
+    Annotations map[string]string
+    OwnerReferences []OwnerReference
+    Finalizers []string
+    ClusterName string
+    ManagedFields []ManagedFieldsEntry
+}
+```
+
+Core metadata everyone thinks about. Simplified view. Every object MUST have it, and must look like this. There's OwnerReferences, labels, annotations, finalizers, managed fields that all can go in there, and they're standardised.
+
+#### List types
+[types.go#L913-L923](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L913-L923)
+
+```go
+type List struct {
+    TypeMeta `json:",inline"`
+    ListMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
+    Items []runtime.RawExtension `json:"items" protobuf:"bytes,2,rep,name=items"`
+}
+```
+
+For when you ask for a collection of items (this contains `ListMeta` a much smaller variant that can contain continuation point and a remaining item count). More importantly; look at items there; a dynamic collection so this struct can be re-used.
+
+#### APIResource
+[types.go#L998-L1032](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L998-L1032)
+
+```go
+type APIResource struct {
+    Name string
+    SingularName string
+    Namespaced bool
+    Group string
+    Version string
+    Kind string
+    Verbs Verbs
+    ShortNames []string
+    Categories []string
+    StorageVersionHash string
+}
+```
+
 standardising where we we can get information of what Kind
 
-ListOptions
-https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L329-L346
-GetOptions, ListOptions, DeleteOptions, PatchOptions. All parameters that the API accepts encapsulated into common structs from this root file. Error responses.
+#### ListOptions
+[types.go#L328-L412](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L328-L412)
 
-LabelSelectors.
-https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go#L1095-L1104
-that sits inside ListOptions, so there's a generic way of filtering
+```go
+type ListOptions struct {
+    TypeMeta
+    LabelSelector string
+    FieldSelector string
+    Watch bool
+    AllowWatchBookmarks bool
+    ResourceVersion string
+    ResourceVersionMatch ResourceVersionMatch
+    TimeoutSeconds *int64
+    Limit int64
+    Continue string
+}
+```
 
-So I am raving this about this, but it's because of the consistency and complete adoption of everything in this; that kubernetes feels so consistent and why we can actually make generic assumptions in other languages.
+GetOptions, ListOptions, DeleteOptions, PatchOptions. All parameters that the API accepts encapsulated into common structs from this root file. Error responses. LabelSelectors sitting inside ListOptions, so there's a generic way of filtering
+
+#### Types.go
+
+- 339 lines of code
+- 928 lines of comments
+
+So I am raving this about this, but it's because of the consistency and complete adoption of everything in this file; that kubernetes feels so consistent and why we can actually make generic assumptions in other languages.
 
 ### client-go consistency
 The same consistency can be seen in client-go
@@ -101,7 +180,24 @@ GET /api/v1/pods
 but that's a relatively minor inconsistency, we can strip a slash if the group is empty and then change change apis to api...K.
 
 ## WatchEvents
-WatchEvents are what you received when you perform a watch call, aka a GET on a root resource api. With watch parameters in the querystring. When you use watch, you effectively set a timeout, and you'll get a chunked response, of NEWLINE delimited json, each line containg a wrapped verision of your object
+WatchEvents are what you received when you perform a watch call, aka a GET on a root resource api. From apimachinery watch.go:
+
+```go
+const (
+    Added    EventType = "ADDED"
+    Modified EventType = "MODIFIED"
+    Deleted  EventType = "DELETED"
+    Bookmark EventType = "BOOKMARK"
+    Error    EventType = "ERROR"
+)
+
+type Event struct {
+    Type EventType
+    Object runtime.Object
+}
+```
+
+With watch parameters in the querystring. When you use watch, you effectively set a timeout, and you'll get a chunked response, of NEWLINE delimited json, each line containg a wrapped verision of your object
 
 ```
 { "type": "ADDED", "object": {"kind": "Pod", "apiVersion": "v1", "metadata": {"resourceVersion": "10596", ...} } }
