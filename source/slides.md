@@ -275,18 +275,25 @@ notes:
 - url consistency lets us make easy mappings between types and urls
 - though things start to break down a little bit
 
-### Broken: empty api group
-because this does not hold for pods, nodes, namespaces (TODO: more ex), and any other type in the core object list. they have a different url that starts with `api` rather than `apis`.
+---
+#### Broken: api endpoints empty group
 
 ```
 GET /api/v1/pods
 ```
 
-but that's a relatively minor inconsistency, we can strip a slash if the group is empty and then change change apis to api...K.
+notes:
+- because this does not hold for pods, nodes, namespaces, service, pvcs, secret, or any other type in the core/v1 list. They have a different url that starts with `api` rather than `apis` + group missing
+- but that's a relatively minor inconsistency, we can strip a slash if the group is empty and then change change apis to api...K.
 
-## WatchEvents
-WatchEvents are what you received when you perform a watch call, aka a GET on a root resource api. From apimachinery watch.go:
+---
+## kubernetes.io: watch events
 
+- [apimachinery:watch/watch.go#L40-L70](https://github.com/kubernetes/apimachinery/blob/681a08151eac875afc5286670195105118d3485d/pkg/watch/watch.go#L40-L70)
+- [apimachinery:meta/watch.go#L31-L40](https://github.com/kubernetes/apimachinery/blob/594fc14b6f143d963ea2c8132e09e73fe244b6c9/pkg/apis/meta/v1/watch.go#L31-L40)
+
+---
+## kubernetes.io: watch events - source
 ```go
 const (
     Added    EventType = "ADDED"
@@ -296,11 +303,16 @@ const (
     Error    EventType = "ERROR"
 )
 
-type Event struct {
-    Type EventType
-    Object runtime.Object
+type WatchEvent struct {
+    Type string `json:"type"`
+    Object runtime.RawExtension `json:"object"`
 }
 ```
+
+notes:
+- WatchEvents are what you received when you perform a watch call, aka a GET on a root resource api. From apimachinery watch.go:
+
+https://kubernetes.io/docs/reference/using-api/api-concepts/#efficient-detection-of-changes
 
 With watch parameters in the querystring. When you use watch, you effectively set a timeout, and you'll get a chunked response, of NEWLINE delimited json, each line containg a wrapped verision of your object
 
