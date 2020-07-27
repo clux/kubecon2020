@@ -32,7 +32,7 @@ notes:
 
 notes:
 - We'll identify some of these invariants.
-- Then talk about how to model the same api in rust using generics, and see that it gives us the same consistency for free.
+- Then talk about how to model the same api in rust using generics, and see that it gives us the same consistency more-or-less for free.
 - We'll also touch on async api design in rust during this modelling process. Async rust was only properly released about a year ago, and the rust ecosystem has consequently seen enormous advances in this year with it stable. So if you're not up to speed, you'll at least see some patterns in this talk.
 
 
@@ -50,7 +50,8 @@ Yes, there are some broken invariants, but kubernetes is still remarkably consis
 
 notes:
 - Let's talk about what kubernetes actually provides.
-- start by diving into the arguably most important file of all.
+- these in particular
+- start by diving into the arguably most important file of all
 ---
 #### types.go: TypeMeta
 
@@ -250,7 +251,7 @@ notes:
 - much code
 - client api, also informers for every object
 - as a result; client-go > 100K LOC (without vendoring)
-- and again i'm not trying to judge here. this is great.
+- and i'm not trying to judge here. this is great.
 the fact that everything looks the same in here, is what enables `kubectl` to provide such a consistent interface.
 
 ---
@@ -274,26 +275,52 @@ GET /apis/GROUP/VERSION/namespaces/NAMESPACE/RESOURCETYPE/NAME
 notes:
 - url consistency lets us make easy mappings between types and urls
 - though things start to break down a little bit
+- because this does not hold for pods, nodes, namespaces, service, pvcs, secret, or any other type in the core/v1 list. They have a different url that starts with `api` rather than `apis` + group missing
 
 ---
-#### Broken: api endpoints empty group
+#### Broken: empty api group
 
 ```
 GET /api/v1/pods
+
+       !=
+
+GET /apis/core/v1/pods
 ```
 
+
 notes:
-- because this does not hold for pods, nodes, namespaces, service, pvcs, secret, or any other type in the core/v1 list. They have a different url that starts with `api` rather than `apis` + group missing
-- but that's a relatively minor inconsistency, we can strip a slash if the group is empty and then change change apis to api...K.
+- it's a relatively minor inconsistency, coz we can just special case the empty group or core, but it's still awkward.
 
 ---
 ## kubernetes.io: watch events
 
-- [apimachinery:watch/watch.go#L40-L70](https://github.com/kubernetes/apimachinery/blob/681a08151eac875afc5286670195105118d3485d/pkg/watch/watch.go#L40-L70)
-- [apimachinery:meta/watch.go#L31-L40](https://github.com/kubernetes/apimachinery/blob/594fc14b6f143d963ea2c8132e09e73fe244b6c9/pkg/apis/meta/v1/watch.go#L31-L40)
+[api-concepts#efficient-detection-of-changes](https://kubernetes.io/docs/reference/using-api/api-concepts/#efficient-detection-of-changes)
+
+```json
+{ "type": "ADDED", "object": { \
+    "kind": "Pod",  "apiVersion": "v1", \
+    "metadata": {"resourceVersion": "10596", ...}, ...} }
+{ "type": "MODIFIED", "object": { \
+    "kind": "Pod", "apiVersion": "v1", \
+    "metadata": {"resourceVersion": "11020", ...}, ...} }
+```
+
+notes:
+- WatchEvs are what you receiv when you perform a watch call on any list EP
+- this is how it looks (this response contains two lines)
+- you'll get a chunked response, typically 1 line per chunk, but you'll have to buffer yourself until you have a complete line, because each of these lines can exceed the MTU
+- but then for each line, you can parse the inner object as the type you actually want
+- it also returns the etcd resource version we last saw (resume point in some sense)
+- all apis use this and it's consistent.
+
 
 ---
 ## kubernetes.io: watch events - source
+
+- [apimachinery:watch/watch.go#L40-L70](https://github.com/kubernetes/apimachinery/blob/681a08151eac875afc5286670195105118d3485d/pkg/watch/watch.go#L40-L70)
+- [apimachinery:meta/watch.go#L31-L40](https://github.com/kubernetes/apimachinery/blob/594fc14b6f143d963ea2c8132e09e73fe244b6c9/pkg/apis/meta/v1/watch.go#L31-L40)
+
 ```go
 const (
     Added    EventType = "ADDED"
@@ -308,38 +335,24 @@ type WatchEvent struct {
     Object runtime.RawExtension `json:"object"`
 }
 ```
+notes:
+- from source, more runtime generics.
+
+---
+### Rust Modelling
+
+- [kube-rs](https://github.com/clux/kube-rs/)
+- Arnav Singh / @Arnavion - [k8s-openapi](https://github.com/Arnavion/k8s-openapi)
 
 notes:
-- WatchEvents are what you received when you perform a watch call, aka a GET on a root resource api. From apimachinery watch.go:
+- at this point we have actually covered all the core ideas we need to talk about this from the rust POV
+- and the rest of the talk will feature a grab bag of different rust code, shown here in slightly simplified code here, much of which are from kube-rs
+- TICK: but also huge shoutout to Arnav Singh
+- the project really is the lynchpin that makes any generics possible
+- generates rust structures from openapi schemas, plus factoring out some of "the consistency" into a few traits that is then implemented for these structures
 
-https://kubernetes.io/docs/reference/using-api/api-concepts/#efficient-detection-of-changes
-
-With watch parameters in the querystring. When you use watch, you effectively set a timeout, and you'll get a chunked response, of NEWLINE delimited json, each line containg a wrapped verision of your object
-
-```
-{ "type": "ADDED", "object": {"kind": "Pod", "apiVersion": "v1", "metadata": {"resourceVersion": "10596", ...} } }
-{ "type": "MODIFIED", "object": {"kind": "Pod", "apiVersion": "v1", "metadata": {"resourceVersion": "11020", ...}, ...} }
-```
-
-so for each line you can parse the inner object as the type you actually have.
-oh, and since these objects are frequently bigger than the MTU, any client would need to buffer chunks until you have a complete line.
-
-so we can work with that. all apis use this and it's consistent.
-
-## END PRAISE - CONSTRUCT AROUND IN RUST
-at this point we have actually covered all the core ideas we need to talk about this from the rust POV.
-
-so i'll show a grab bag of different, slightly simplified code here, much of which are from [kube-rs](https://github.com/clux/kube-rs/), but:
-
-also, and huge shoutout to:
-
-- Arnav Singh / @Arnavion - `k8s-openapi`
-the project really is the lynchpin that makes any generics possible
-
-generates rust structures from openapi schemas, plus factoring out some of the consistency into a few traits that is then implemented for these structures
-
+---
 ### k8s-openapi: Resource Trait
-TL;DR: A rust trait is something you can implement for a type, and then later in generic functions, use to constrain generic input parameters to only types that have implementations for it.
 
 ```rust
 pub trait Resource {
@@ -350,12 +363,13 @@ pub trait Resource {
 }
 ```
 
-Normally traits are meant to encapsulate behaviour, can't put dynamic data in them, but you are allowed to put in static associated constants.
+notes:
+- TL;DR: A rust trait is behaviour you can implement for a type, and then later you can use that trait as a constraint in function signatures
+- Normally traits are meant to encapsulate behaviour, can't put dynamic data in them, but you are allowed to put in static associated constants.
+- so we can use this to map an object to where **on** the api it lives.
 
-so we can use this to map an object to where **on** the api it lives.
-
-### Metadata Trait
-Another one from `k8s-openapi`, a super-trait. A way to extract `ObjectMeta` from an object:
+---
+### k8s-openapi: Metadata Trait
 
 ```rust
 pub trait Metadata: Resource {
@@ -363,19 +377,14 @@ pub trait Metadata: Resource {
 }
 ```
 
-```rust
-pub trait Metadata: Resource {
-    type MetaType;
-    fn metadata(&self) -> &Self::MetaType;
-}
-```
+notes:
+- Trait is just a way to grab metadata that is consistent across all objects.
+- For this to be implementable the type kind of needs to be the same.
+- Slightly simplifying; as the actual one is slightly more general, and allows parametrising the metadata types. Not super relevant, but: all listable types uses `ListMeta`, but everything else returns `ObjectMeta`
+- But we (kube-rs) can only really do useful ops on top of objects that have `ObjectMeta`, so theres' slightly more indirection for us to actually get the the behaviour we want.
 
-The one in `k8s-openapi` is actually slightly more general, and allows parametrising the metadata types. Not super relevant, but: all listable types uses `ListMeta`, but everything else returns `ObjectMeta`
-
-We can only really do useful ops on top of objects that have `ObjectMeta`, so theres' slightly more indirection to actually account for this if you look at our source. But the concept is fundamentally; we have a trait to tell us how to get metadata.
-
-### Resource struct
-Got two root traits. Let's build a dynamic api on top of them.
+---
+### kube-rs: Resource struct
 
 ```rust
 #[derive(Clone, Debug)]
@@ -384,17 +393,22 @@ pub struct Resource {
     pub group: String,
     pub kind: String,
     pub version: String,
-    pub namespace: Option<String>,
+    pub namespace: Option<String>
 }
 ```
 
-You may note that this is basically a dynamic version of the `Resource` trait, but it allows carrying the dynamic namespace property and can be instantiated at runtime from an arbitrary object (necessary for CRDs).
+notes:
+- Got two root traits. Let's build a dynamic api on top of them.
+- Don't copy paste. Canadian Aboriginal Syllabics coz reveal tried to close my html string tag.
+- You may note that this is basically a dynamic version of the `Resource` trait, but it allows carrying the dynamic namespace property and can be instantiated at runtime from an arbitrary object (helpful for CRDs).
+- For CRDs we can create this manually, with like a builder, but for existing openapi structs can get a blanket ctor with one trait constrait:
 
-For CRDs we can create this manually, but for existing openapi structs we can implement it automatically with trait constrait:
+---
+### kube-rs: Resource namespaced ctor
 
 ```rust
 impl Resource {
-    pub fn namespaced<K: k8s_openapi::Resource>(ns: &str) -> Self {
+    pub fn namespacedᐸK: k8s_openapi::Resourceᐳ(ns: &str) -> Self {
         Self {
             api_version: K::API_VERSION.to_string(),
             kind: K::KIND.to_string(),
@@ -406,36 +420,46 @@ impl Resource {
 }
 ```
 
-Note that this does not require `Resource` to implement the trait, it just needs it for that quick constructor.
+Notes:
+- This constraint does not require `Resource` to implement the trait, it just needs it for that quick constructor
 
-We can also then the function that dictates all of k8s urls on top of this struct:
+---
+### kube-rs: Url mapper
 
 ```rust
 impl Resource {
-    fn make_url(&self) -> String {
-        let ns = self.namespace.as_ref().map(|n| format!("namespaces/{}/", n));
-        format!(
-            "/{group}/{api_version}/{namespaces}{resource}",
-            group = if self.group.is_empty() { "api" } else { "apis" },
-            api_version = self.api_version,
-            namespaces = ns.unwrap_or_default(),
-            resource = to_plural(&self.kind.to_ascii_lowercase()),
-        )
-    }
+  fn make_url(&self) -> String {
+    let ns = self.namespace.as_ref()
+        .map(|n| format!("namespaces/{}/", n));
+    let plural = to_plural(&self.kind.to_ascii_lowercase());
+    format!(
+        "/{group}/{api_version}/{namespaces}{resource}",
+        group = if self.group.is_empty() {"api"}else{"apis"},
+        api_version = self.api_version,
+        namespaces = ns.unwrap_or_default(),
+        resource = plural,
+    )
+  }
 }
 ```
 
-CAVEAT: due to limitation of the trtait: load-bearing pluralize.
+notes:
+- We can also create the function that dictates all of k8s urls on top of this struct
+- handles that special empty group case
+- CAVEAT: due to limitation of the trtait: load-bearing pluralize.
 phrase i had never believed i had to use to describe software architecture, let alone from my own designs, but here we are.
+- ..but with url mapper => we CAN MAKE DYNAMIC API
 
-## Dynamic API
-Now that we have a resource -> url mappers. Let's create a dynamic API.
+---
+## kube-rs: Dynamic API
 
 ```rust
 impl Resource {
-    pub fn create(&self, pp: &PostParams, data: Vec<u8>) -> Result<Request<Vec<u8>>> {
+    pub fn create(&self, pp: &PostParams, data: Vecᐸu8ᐳ)
+        -> ResultᐸRequestᐸVecᐸu8ᐳᐳᐳ
+    {
         let base_url = self.make_url() + "?";
-        let mut qp = url::form_urlencoded::Serializer::new(base_url);
+        let mut qp = Serializer::new(base_url);
         if pp.dry_run {
             qp.append_pair("dryRun", "All");
         }
@@ -445,43 +469,51 @@ impl Resource {
     }
 }
 ```
-This is something similar to other language clients. Bytes come in, go through url mapper, bytes come out.
 
-Of course, this isn't really what we want. We don't want to be interjecting at every point of the way to try to deserialize a bytestream into a concrete type.
+notes:
+- This is now something similar to other language clients. Bytes come in, goes through a url mapper and an http call, and response bytes come out.
+- Of course, this isn't really what we want. We don't want to be interjecting at every point of the way to try to deserialize a bytestream into a concrete type.
+- What we really want, is automatic serialization of an instantiated object, and automatic deserialization of the response type into the correct object.
 
-What we really want, is automatic serialization of an instantiated object, and automatic deserialization of the response type into the correct object.
-
-### Api<K>
+---
+### kube-rs: Typed API
 
 ```rust
-pub struct Api<K> {
+pub struct ApiᐸKᐳ {
     resource: Resource,
     client: Client,
-    phantom: PhantomData<K>,
+    phantom: PhantomDataᐸKᐳ,
 }
 
-let api: Api<Pod> = Api::namespaced(client, ns);
+let api: ApiᐸPodᐳ = Api::namespaced(client, ns);
 ```
 
-For that we our first truly generic type. It's a wrapper around a resource, and we put a copy of a http client inside of it, along with an empty marker of what type it's for. But notice there were no constraints on `K` here.
+notes:
+- For that we our first truly generic type. It's a wrapper around a resource, and we put a copy of a http client inside of it, along with an empty marker of what type it's for (need to coerce somewhere - api only handles one object type)
+- But notice there were no constraints on `K` here - they come in impls
 
-### Api<K> where K: Metadata
+---
+### kube-rs: Typed API methods
 
 ```rust
-impl<K> Api<K>
+implᐸKᐳ ApiᐸKᐳ
 where K: Clone + Deserialize + Metadata,
 {
-    pub async fn create(&self, pp: &PostParams, data: &K) -> Result<K>
+    pub async fn create(&self, pp: &PostParams, data: &K)
+        -> ResultᐸKᐳ
     where K: Serialize,
     {
         let bytes = serde_json::to_vec(&data)?;
         let req = self.resource.create(&pp, bytes)?;
-        self.client.request::<K>(req).await
+        self.client.request::ᐸKᐳ(req).await
     }
 }
 ```
 
-By adding constraints on `K` we can implement `client-go` like methods on this ad-hoc `Api` struct across all types openapi generated types with a single blanket impl.
+notes:
+- weird syntax, generic impls, K needs to satisfy constraints
+- K needs extra constraints for one method
+- By adding constraints on `K` we can implement `client-go` like methods on this ad-hoc `Api` struct across all types openapi generated types with a single blanket impl.
 
 <!--
 #### SKIIIP Broken: spec/status
@@ -608,19 +640,23 @@ it's an easy assumption to make, but it's just one prominent example of many
 and it leads you down a very uneasy road of not being able to assume anything.
 
 so in general, we have to write awkward code and unpack optionals -_-
+
+### TODO: Show api trait signatures?
 -->
 
 
-### TODO: Show api trait signatures?
 
+---
 ### In general: Lean on types
 Lot of benefits to leaning on types. You write things once and it is used by everything. We want code to take effect immediately rather than have to step through a code generation pattern, and then commit generated code to a repo.
 
 (USER FACING CODE STARTS HERE)
 
+---
 ## Code Generation
 But that's not to say we don't do code generation. Rust has procedural macros, which lets us do code generation at compile time with `cargo build` and this code is used in the later stages of the same compilation. So that first class support for code generation basically eliminates a whole class of errors where you are operating on a stale version of generated code, because the compiler disallows that possibility.
 
+---
 ### Serialize
 
 ```rust
@@ -632,9 +668,9 @@ pub struct FooSpec {
 }
 ```
 
-Just the basic derives that almost everyone uses for `Serialize` and `Deserialize` from the `serde` library. This gives you serialization and deserialization methods that all follow standard traits.
-
-In practice, you often end up writing much of the same annotations as you would with go's json encoding to like distinguish casings of your code and disk format, but there's type safety around it. Not just comments in backticks.
+notes:
+- Just the basic derives that almost everyone uses for `Serialize` and `Deserialize` from the `serde` library. This gives you serialization and deserialization methods that all follow standard traits.
+- In practice, you often end up writing much of the same annotations as you would with go's json encoding to like distinguish casings of your code and disk format, but there's type safety around it. Not just comments in backticks.
 
 ## CustomResource
 
@@ -648,25 +684,27 @@ pub struct FooSpec {
 }
 ```
 
-And we can also make our own derive rules and options for it. Here we are using kube's `CustomResource` proc-macro, and we are telling kube what the resource parameters are (group, version, kind). This will create all the code around a custom resource.
+notes:
+- And we can also make our own derive rules and options for it. Here we are using kube's `CustomResource` proc-macro, and we are telling kube what the resource parameters are (group, version, kind). This will create all the code around a custom resource.
+- We've tried to mimic some of the usability of kubebuilder here, but without any of the stored generated code.
 
-We've tried to mimic some of the usability of kubebuilder here, but without any of the stored generated code.
-
+---
 ### Example: Using a CRD
 
 ```rust
-    let crds: Api<CustomResourceDefinition> = Api::all(client);
-    crds.create(&pp, &Foo::crd()).await;
-    let foos: Api<Foo> = Api::namespaced(client, &namespace);
+let crds: ApiᐸCustomResourceDefinitionᐳ = Api::all(client);
+crds.create(&pp, &Foo::crd()).await;
+let foos: ApiᐸFooᐳ = Api::namespaced(client, &namespace);
 
-    let f = Foo::new("eirik-example", FooSpec {
-        name: "i am a foo crd instance".into(),
-        info: None
-    });
-    let o = foos.create(&pp, &f2).await?;
+let f = Foo::new("eirik-example", FooSpec {
+    name: "i am a foo crd instance".into(),
+    info: None
+});
+let o = foos.create(&pp, &f2).await?;
 ```
 
-The generated `Foo` type (containing metadata, spec, pointing to your spec, etc), also has a `crd` method. So you can literally just apply it and start using it in like `main`.
+notes:
+- The generated `Foo` type (containing metadata, spec, pointing to your spec, etc), also has a `crd` method. So you can literally just apply it and start using it in like `main`.
 
 
 <!--
@@ -682,11 +720,25 @@ none of the original patch types even work (strategic might have, but not suppor
 SKIP DUE TO https://github.com/clux/kube-rs/issues/43 FIXED IN SS APPLY?
 -->
 
+---
 ### Watch
-Talked about basic crud operations (same pricinple as `create`).
-One thing that is fundamentally different is watch. Watch is chunked. It's async. And fn that does watch will return `-> impl Stream<Result<...>`
-Stream == async iterator.
 
+```rust
+    pub async fn watch(&self, lp: &ListParams, rv: &str)
+        -> Resultᐸimpl StreamᐸItem = ResultᐸWatchEventᐸKᐳᐳᐳᐳ
+    {
+        let req = self.resource.watch(&lp, &rv)?;
+        self.client.request_events::ᐸKᐳ(req).await
+    }
+```
+
+notes:
+- Talked about basic crud operations (same pricinple as `create`).
+- One that is fundamentally different is watch. Watch is chunked. It's async.
+- So watch returns a complicated dynamic type that implements the Stream trait (impl Stream). Stream == async iterator. Have to await each new element.
+- Wrapped in result because HTTP req can fail, so if that succeeded then you are streaming
+
+---
 ### Broken: Watch
 Nice signature from that, BUT. Watch is awkward. ResourceVersions integers exposed via etcd, that you have to return on every watch call to tell k8s where you left off.
 
@@ -696,6 +748,7 @@ Watch calls also can't reliably stay open for more than 5 minutes, so you have t
 
 and finally, the obscene amount of data this can return. Tried using a node informer? insane amount of noise. FULL 10k data every 5s because the conditions in its status object contain a last updated timestamp...
 
+---
 ### WatchEvent
 That said, the `WatchEvent` itself is nice. Remember how watch events all packed an object inside of it? We can model this in rust with generic enums:
 
@@ -722,7 +775,7 @@ that's how that would look. however, this is one of those small cases where kube
 no spec, no name, kind Pod.
 so that actually validates `metadata.name` being optional (even if we didn't have a generatename mechanism).
 
-
+---
 ## Runtime
 How to build on top of watch and the api. Well we got to watch continously, but not longer than 5 minutes, propagate all user errors, retry/re-list on desync errors, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
 
@@ -734,6 +787,7 @@ He basically figured out an entirely Stream based solution for watchers/reflecto
 
 It's an amazing technical achievement that makes it really easy to integrate into your application.
 
+---
 ### Watcher
 Informer-like. But FSM.
 
@@ -753,6 +807,7 @@ enum State<K: Meta + Clone> {
 
 the last magic there is just "a stream of WatchEvent results of type K", put inside a box on the heap.
 
+---
 ### Reflector
 Builds on top of watcher and adds a store.
 
@@ -777,6 +832,7 @@ pub fn reflector<K: Meta + Clone, W: Stream<Item = Result<watcher::Event<K>>>>(
 }
 ```
 
+---
 ### Controller
 Controller is a system that calls your reconciler with events as configured.
 You define 2 fns. One where you write idempotent (not going to talk about how to write resilient controllers, all normal advice (kbuilder etc) applies).
@@ -815,10 +871,12 @@ async fn main() -> Result<(), kube::Error> {
 
 should remind you a bit of controller-runtime. heavily inspired (got help).
 
-## Building Controllers
+---
+### Building Controllers
 not rehashing best practices. most advice from kubebuilder / controller-runtime applies. reconcile needs to be idempotent, check state of the world before you redo all the work on a duplicate event. use server side apply. use finalizers to gc.
 
-## Examples
+---
+### Examples
 No scaffolding here. Choose your own dependencies.
 Web frameworks?
 - actix
@@ -835,9 +893,9 @@ ultimately, not going to dictate anything and put it inside an opinionated frame
 
 link to controller-rs and version-rs.
 
-## Caveats
+---
+### Caveats
 Rough edges. Api library (kube) quite stable, but kube-runtime is pretty new still. Show users and testimonials. Kruslet.
 
-
-## TODOS
-broken slap-on - so we reveal it part way through?
+Vision: light weight, easy to understand. Not much indirection. No crazy scaffolding. And type safety.
+Rust ideal for this, but we are in early stages.
