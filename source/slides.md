@@ -15,9 +15,8 @@
   }
 </style>
 
-- Eirik
-- [clux](https://github.com/clux)
-- [@sszynrae](https://twitter.com/sszynrae)
+- Eirik Albrigtsen
+- [clux](https://github.com/clux) / [@sszynrae](https://twitter.com/sszynrae)
 - [kube-rs](https://github.com/clux/kube-rs)
 
 notes:
@@ -27,21 +26,32 @@ notes:
 ---
 ### Hidden Generics in Kubernetes' API
 
+- Finding invarints in Go codebase
+- Use Rust Generics to model the API <!-- .element: class="fragment" -->
+- Async Rust <!-- .element: class="fragment" -->
+
 notes:
-- We'll talk about how to model the same api in rust using generics, and see that it gives us the same consistency for free. Still, it's not a magic bullet. Kubernetes is written in Go; Any broken invariants on the Go side would still need to be respected in rust land.
-- But this is going to be a very positive talk. Yes, there are some broken invariants, but kubernetes is still remarkably consistent in its api despite shortcomings of the language. And we'll show some good examples as we go along.
+- We'll identify some of these invariants.
+- Then talk about how to model the same api in rust using generics, and see that it gives us the same consistency for free.
 - We'll also touch on async api design in rust during this modelling process. Async rust was only properly released about a year ago, and the rust ecosystem has consequently seen enormous advances in this year with it stable. So if you're not up to speed, you'll at least see some patterns in this talk.
 
-OTE: i'll try to use "WE" and "OUR" for the needs of kube-rs)
+
+<!--Still, it's not a magic bullet. Kubernetes is written in Go; Any broken invariants on the Go side would still need to be respected in rust land.
+Yes, there are some broken invariants, but kubernetes is still remarkably consistent in its api despite shortcomings of the language. And we'll show some good examples as we go along.-->
+
+<!--OTE: i'll try to use "WE" and "OUR" for the needs of kube-rs)-->
 
 ---
-## Kubernetes
-Let's talk about what kubernetes provides.
+### Kubernetes Invariants
+
+- [apimachinery/meta/v1/types.go](https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.g)
+- [client-go/kubernetes/typed](https://github.com/kubernetes/client-go/tree/master/kubernetes/typed)
+
+notes:
+- Let's talk about what kubernetes actually provides.
+- start by diving into the arguably most important file of all.
 ---
-### meta types.go in apimachinery
-So let's dive into the arguably most important file of all.
----
-#### TypeMeta
+#### types.go: TypeMeta
 
 [types.go#L36-56](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L36-L56)
 
@@ -54,9 +64,11 @@ type TypeMeta struct {
 }
 ```
 
-Every object has kind + version - flattened into the root structure like `Pod`
+notes:
+- Every object has kind + version - flattened into the root structure
+
 ---
-#### ObjectMeta
+#### types.go: ObjectMeta
 [types.go#L108-L282](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L108-L282)
 
 <!--
@@ -87,20 +99,24 @@ notes:
 - Core metadata everyone thinks about. Simplified view, hidden read-only properties. Every object MUST have it, and must look like this.
 - OwnerReferences, labels, annotations, finalizers, managed fields that all can go in there, and they're standardised.
 
-#### List types
+---
+#### types.go: List
 [types.go#L913-L923](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L913-L923)
 
 ```go
 type List struct {
     TypeMeta `json:",inline"`
-    ListMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
-    Items []runtime.RawExtension `json:"items" protobuf:"bytes,2,rep,name=items"`
+    ListMeta `json:"metadata,omitempty"`
+    Items []runtime.RawExtension `json:"items"`
 }
 ```
 
-For when you ask for a collection of items (this contains `ListMeta` a much smaller variant that can contain continuation point and a remaining item count). More importantly; look at items there; a dynamic collection so this struct can be re-used.
+notes:
+- For when you ask for a collection of items (this contains `ListMeta` a much smaller variant that can contain continuation point and a remaining item count).
+- More importantly; look at items there; a dynamic collection so this struct can be re-used.
 
-#### APIResource
+---
+#### types.go: APIResource
 [types.go#L998-L1032](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L998-L1032)
 
 ```go
@@ -118,9 +134,11 @@ type APIResource struct {
 }
 ```
 
-standardising where we we can get information of what Kind
+notes:
+- standardising where we we can get information of what Kind
 
-#### ListOptions
+---
+#### types.go: ListOptions
 [types.go#L328-L412](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L328-L412)
 
 ```go
@@ -138,18 +156,23 @@ type ListOptions struct {
 }
 ```
 
-GetOptions, ListOptions, DeleteOptions, PatchOptions. All parameters that the API accepts encapsulated into common structs from this root file. Error responses. LabelSelectors sitting inside ListOptions, so there's a generic way of filtering
+notes:
+- GetOptions, ListOptions, DeleteOptions, PatchOptions.
+- All parameters that the API accepts encapsulated into common structs from this root file.
+- Error responses.
+- LabelSelectors sitting inside ListOptions, so there's a generic way of filtering
 
+---
 #### Types.go
 
 - 339 lines of code
 - 928 lines of comments
 
-So I am raving this about this, but it's because of the consistency and complete adoption of everything in this file; that kubernetes feels so consistent and why we can actually make generic assumptions in other languages.
+notes:
+- So I am raving this about this, but it's because of the consistency and complete adoption of everything in this file; that kubernetes feels so consistent and why we can actually make generic assumptions in other languages.
+- lets look at client-go for a contrast
 
-### client-go consistency
-The same consistency can be seen in client-go
-
+---
 #### client-go: Deployment
 [deployment.go#L41-L55](https://github.com/kubernetes/client-go/blob/36233866f1c7c0ad3bdac1fc466cb5de3746cfa2/kubernetes/typed/apps/v1/deployment.go#L41-L55)
 
@@ -166,43 +189,40 @@ type DeploymentInterface interface {
     Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.Deployment, err error)
     GetScale(ctx context.Context, deploymentName string, options metav1.GetOptions) (*autoscalingv1.Scale, error)
     UpdateScale(ctx context.Context, deploymentName string, scale *autoscalingv1.Scale, opts metav1.UpdateOptions) (*autoscalingv1.Scale, error)
-
-    DeploymentExpansion
-}
 ```
 
-getters/updaters/patchers/replacers/listers/deleters/watchers
-they take the same parameters
+notes:
+- typed api methods in client go
+- getters/updaters/patchers/replacers/listers/deleters/watchers
+- 200 line file for this struct
 
-#### client-go: Statefulset
+---
+#### client-go: Pod
+[pod.go#L39-L54](https://github.com/kubernetes/client-go/blob/36233866f1c7c0ad3bdac1fc466cb5de3746cfa2/kubernetes/typed/core/v1/pod.go#L39-L54)
 
 ```go
-// StatefulSetInterface has methods to work with StatefulSet resources.
-type StatefulSetInterface interface {
-    Create(ctx context.Context, statefulSet *v1.StatefulSet, opts metav1.CreateOptions) (*v1.StatefulSet, error)
-    Update(ctx context.Context, statefulSet *v1.StatefulSet, opts metav1.UpdateOptions) (*v1.StatefulSet, error)
-    UpdateStatus(ctx context.Context, statefulSet *v1.StatefulSet, opts metav1.UpdateOptions) (*v1.StatefulSet, error)
+type PodInterface interface {
+    Create(ctx context.Context, pod *v1.Pod, opts metav1.CreateOptions) (*v1.Pod, error)
+    Update(ctx context.Context, pod *v1.Pod, opts metav1.UpdateOptions) (*v1.Pod, error)
+    UpdateStatus(ctx context.Context, pod *v1.Pod, opts metav1.UpdateOptions) (*v1.Pod, error)
     Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
     DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error
-    Get(ctx context.Context, name string, opts metav1.GetOptions) (*v1.StatefulSet, error)
-    List(ctx context.Context, opts metav1.ListOptions) (*v1.StatefulSetList, error)
+    Get(ctx context.Context, name string, opts metav1.GetOptions) (*v1.Pod, error)
+    List(ctx context.Context, opts metav1.ListOptions) (*v1.PodList, error)
     Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error)
-    Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.StatefulSet, err error)
-    GetScale(ctx context.Context, statefulSetName string, options metav1.GetOptions) (*autoscalingv1.Scale, error)
-    UpdateScale(ctx context.Context, statefulSetName string, scale *autoscalingv1.Scale, opts metav1.UpdateOptions) (*autoscalingv1.Scale, error)
-
-    StatefulSetExpansion
-}
+    Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.Pod, err error)
+    GetEphemeralContainers(ctx context.Context, podName string, options metav1.GetOptions) (*v1.EphemeralContainers, error)
+    UpdateEphemeralContainers(ctx context.Context, podName string, ephemeralContainers *v1.EphemeralContainers, opts metav1.UpdateOptions) (*v1.EphemeralContainers, error)
 ```
 
-and you can go to any other type and you'll see the same story.
+notes:
+- takes same params as deployment
+- same story for every object
+- this is a 200 line file for deployment. there's one for every object?
+- how could be this possibly be consistent?
 
-this is a 200 line file for deployment. there's one for every object?
-
-
-how could be this possibly be consistent?
-
-#### How?
+---
+#### client-go: header
 [deployment.go#L41-L55](https://github.com/kubernetes/client-go/blob/36233866f1c7c0ad3bdac1fc466cb5de3746cfa2/kubernetes/typed/apps/v1/deployment.go#L41-L55)
 
 ```go
@@ -211,20 +231,23 @@ how could be this possibly be consistent?
 package v1
 ```
 
+notes:
+- right. all of this is generated.
+- because people recognised that you **have** to enforce some of these assumptions for them to stick.
+- now, this isn't generics, but it's consistency. for each, kind, the specific structs are specialized via external code generation - but the gen. source is present in repo regardless
 
+---
+#### client-go
 
-right. all of this is generated.
-because people recognised that you **have** to enforce some of these assumptions for them to stick.
+- tons of generated code per object
+- [specialized client api](https://github.com/kubernetes/client-go/tree/master/kubernetes/typed)
+- [specialized informers](https://github.com/kubernetes/client-go/blob/master/informers/apps/v1/statefulset.go#L58-L78)
+- `>` 100K lines of code  <!-- .element: class="fragment" -->
 
-now, this isn't generics, but it's consistency.
-for each, kind, the specific structs are specialized manually
-via code generation - but the source is present in repo regardless
-
-and it's not the only file generated.
-informers logic for every type is also there
-https://github.com/kubernetes/client-go/blob/master/informers/apps/v1/statefulset.go#L58-L78
-
-as a result; client-go > 100K LOC (without vendoring)
+notes:
+- consequence; much code
+- client api, also informers for every object
+- as a result; client-go > 100K LOC (without vendoring)
 
 and again i'm not trying to judge here. this is great.
 the fact that everything looks the same in here, is what enables `kubectl` to provide such a consistent interface.
