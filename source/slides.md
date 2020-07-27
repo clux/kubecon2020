@@ -1,23 +1,46 @@
-# kubecon-talk 30 minutes
-## INTRO
-Hey. I'm Eirik aka clux on github and am one of the main maintainers on kube-rs.
+### Hidden Generics in Kubernetes' API
+<style type="text/css">
+  .reveal h3, .reveal p, .reveal h4 {
+    text-transform: none;
+    text-align: left;
+  }
+  .reveal ul {
+    display: block;
+  }
+  .reveal ol {
+    display: block;
+  }
+  .reveal {
+    background: #353535 !important;
+  }
+</style>
 
-Today, talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, _these properties_ are generally enforced through consistency and code-generation steps.
+- Eirik
+- [clux](https://github.com/clux)
+- [@sszynrae](https://twitter.com/sszynrae)
+- [kube-rs](https://github.com/clux/kube-rs)
 
-We'll talk about how to model the same api in rust using generics, and see that it gives us the same consistency for free. Still, it's not a magic bullet. Kubernetes is written in Go; Any broken invariants on the Go side would still need to be respected in rust land.
+notes:
+- eirik/clux - one of the main maintainers on kube-rs.
+- talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, _these properties_ are generally enforced through consistency and code-generation steps.
 
-But this is going to be a very positive talk. Yes, there are some broken invariants, but kubernetes is still remarkably consistent in its api despite shortcomings of the language. And we'll show some good examples as we go along.
+---
+### Hidden Generics in Kubernetes' API
 
-We'll also touch on async api design in rust during this modelling process. Async rust was only properly released about a year ago, and the rust ecosystem has consequently seen enormous advances in this year with it stable. So if you're not up to speed, you'll at least see some patterns in this talk.
+notes:
+- We'll talk about how to model the same api in rust using generics, and see that it gives us the same consistency for free. Still, it's not a magic bullet. Kubernetes is written in Go; Any broken invariants on the Go side would still need to be respected in rust land.
+- But this is going to be a very positive talk. Yes, there are some broken invariants, but kubernetes is still remarkably consistent in its api despite shortcomings of the language. And we'll show some good examples as we go along.
+- We'll also touch on async api design in rust during this modelling process. Async rust was only properly released about a year ago, and the rust ecosystem has consequently seen enormous advances in this year with it stable. So if you're not up to speed, you'll at least see some patterns in this talk.
 
-(NOTE: i'll try to use "WE" and "OUR" for the needs of kube-rs)
+OTE: i'll try to use "WE" and "OUR" for the needs of kube-rs)
 
+---
 ## Kubernetes
 Let's talk about what kubernetes provides.
-
+---
 ### meta types.go in apimachinery
 So let's dive into the arguably most important file of all.
-
+---
 #### TypeMeta
 
 [types.go#L36-56](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L36-L56)
@@ -32,17 +55,12 @@ type TypeMeta struct {
 ```
 
 Every object has kind + version - flattened into the root structure like `Pod`
-
+---
 #### ObjectMeta
 [types.go#L108-L282](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L108-L282)
 
-```go
-type ObjectMeta struct {
-    // core
-    Name string
+<!--
     GenerateName string
-    Namespace string
-
     // read only
     UID types.UID
     ResourceVersion string
@@ -50,8 +68,12 @@ type ObjectMeta struct {
     CreationTimestamp Time
     DeletionTimestamp *Time
     DeletionGracePeriodSeconds *int64
+-->
+```go
+type ObjectMeta struct {
+    Name string
+    Namespace string
 
-    // custom props props
     Labels map[string]string
     Annotations map[string]string
     OwnerReferences []OwnerReference
@@ -61,7 +83,9 @@ type ObjectMeta struct {
 }
 ```
 
-Core metadata everyone thinks about. Simplified view. Every object MUST have it, and must look like this. There's OwnerReferences, labels, annotations, finalizers, managed fields that all can go in there, and they're standardised.
+notes:
+- Core metadata everyone thinks about. Simplified view, hidden read-only properties. Every object MUST have it, and must look like this.
+- OwnerReferences, labels, annotations, finalizers, managed fields that all can go in there, and they're standardised.
 
 #### List types
 [types.go#L913-L923](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L913-L923)
