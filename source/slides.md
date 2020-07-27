@@ -347,7 +347,7 @@ notes:
 notes:
 - at this point we have actually covered all the core ideas we need to talk about this from the rust POV
 - and the rest of the talk will feature a grab bag of different rust code, shown here in slightly simplified code here, much of which are from kube-rs
-- TICK: but also huge shoutout to Arnav Singh
+- but also huge shoutout to Arnav Singh
 - the project really is the lynchpin that makes any generics possible
 - generates rust structures from openapi schemas, plus factoring out some of "the consistency" into a few traits that is then implemented for these structures
 
@@ -421,7 +421,7 @@ impl Resource {
 ```
 
 Notes:
-- This constraint does not require `Resource` to implement the trait, it just needs it for that quick constructor
+- This constraint does not require the struct to implement the trait, it just needs it for that quick constructor
 
 ---
 ### kube-rs: Url mapper
@@ -451,7 +451,7 @@ phrase i had never believed i had to use to describe software architecture, let 
 - ..but with url mapper => we CAN MAKE DYNAMIC API
 
 ---
-## kube-rs: Dynamic API
+### kube-rs: Dynamic API
 
 ```rust
 impl Resource {
@@ -650,14 +650,14 @@ so in general, we have to write awkward code and unpack optionals -_-
 ### In general: Lean on types
 Lot of benefits to leaning on types. You write things once and it is used by everything. We want code to take effect immediately rather than have to step through a code generation pattern, and then commit generated code to a repo.
 
-(USER FACING CODE STARTS HERE)
-
 ---
-## Code Generation
+### Code Generation
 But that's not to say we don't do code generation. Rust has procedural macros, which lets us do code generation at compile time with `cargo build` and this code is used in the later stages of the same compilation. So that first class support for code generation basically eliminates a whole class of errors where you are operating on a stale version of generated code, because the compiler disallows that possibility.
+
 
 ---
 ### Serialize
+<!--USER FACING CODE STARTS HERE-->
 
 ```rust
 #[derive(Serialize, Deserialize)]
@@ -740,11 +740,16 @@ notes:
 
 ---
 ### Broken: Watch
-Nice signature from that, BUT. Watch is awkward. ResourceVersions integers exposed via etcd, that you have to return on every watch call to tell k8s where you left off.
 
-Sometimes these RVs are stale, and if you are building a state cache like a reflector, you have to re-list and get all the state back for every object in the system if you get desynchronized. Before bookmarks, that was very likely to happen.
+- resourceVersion bookkeeping
+- stale resourceVersions <!-- .element: class="fragment" -->
+- 5 minute limit <!-- .element: class="fragment" -->
+- large data use <!-- .element: class="fragment" -->
 
-Watch calls also can't reliably stay open for more than 5 minutes, so you have to keep issuing this watch call at least that frequently.
+notes:
+- Nice signature from that, BUT. Watch is awkward. ResourceVersions integers exposed via etcd, that you have to return on every watch call to tell k8s where you left off.
+- Sometimes these RVs are stale, and if you are building a state cache like a reflector, you have to re-list and get all the state back for every object in the system if you get desynchronized. Before bookmarks, that was very likely to happen.
+- Watch calls also can't reliably stay open for more than 5 minutes, so you have to keep issuing this watch call at least that frequently.
 
 and finally, the obscene amount of data this can return. Tried using a node informer? insane amount of noise. FULL 10k data every 5s because the conditions in its status object contain a last updated timestamp...
 
@@ -755,7 +760,7 @@ That said, the `WatchEvent` itself is nice. Remember how watch events all packed
 ```rust
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(tag = "type", content = "object", rename_all = "UPPERCASE")]
-pub enum WatchEvent<K> {
+pub enum WatchEventᐸKᐳ {
     Added(K),
     Modified(K),
     Deleted(K),
@@ -792,7 +797,7 @@ It's an amazing technical achievement that makes it really easy to integrate int
 Informer-like. But FSM.
 
 ```rust
-enum State<K: Meta + Clone> {
+enum StateᐸK: Meta + Cloneᐳ {
     /// Empty state, awaiting a LIST
     Empty,
     /// LIST complete, can start watching
@@ -812,9 +817,9 @@ the last magic there is just "a stream of WatchEvent results of type K", put ins
 Builds on top of watcher and adds a store.
 
 ```rust
-let cms: Api<ConfigMap> = Api::namespaced(client, &namespace);
+let cms: ApiᐸConfigMapᐳ = Api::namespaced(client, &namespace);
 
-let store = reflector::store::Writer::<ConfigMap>::default();
+let store = reflector::store::Writer::ᐸConfigMapᐳ::default();
 let reader = store.as_reader();
 let rf = reflector(store, watcher(cms, lp));
 ```
@@ -824,10 +829,9 @@ Move ensures no use after construction. Writer disappears. No weird contracts in
 what is a reflector?
 
 ```rust
-pub fn reflector<K: Meta + Clone, W: Stream<Item = Result<watcher::Event<K>>>>(
-    mut store: store::Writer<K>,
-    stream: W,
-) -> impl Stream<Item = W::Item> {
+pub fn reflectorᐸK: Meta + Clone, W: StreamᐸItem = Resultᐸwatcher::EventᐸKᐳᐳᐳᐳ(mut store: store::WriterᐸKᐳ, stream: W)
+    -> impl StreamᐸItem = W::Itemᐳ
+{
     stream.inspect_ok(move |event| store.apply_watcher_event(event))
 }
 ```
@@ -839,13 +843,13 @@ You define 2 fns. One where you write idempotent (not going to talk about how to
 Second one is an error handler. You might want to check every error dilligently within the reconciler, but you can also just use `?`.
 
 ```rust
-async fn reconcile(g: ConfigMapGenerator, ctx: Context<()>) -> Result<ReconcilerAction, Error> {
+async fn reconcile(g: ConfigMapGenerator, ctx: Contextᐸ()ᐳ) -> Result<ReconcilerAction, Error> {
     // TODO: reconcile
     Ok(ReconcilerAction {
         requeue_after: Some(Duration::from_secs(300)),
     })
 }
-fn error_policy(_error: &Error, ctx: Context<()>) -> ReconcilerAction {
+fn error_policy(_error: &Error, ctx: Contextᐸ()ᐳ) -> ReconcilerAction {
     // TODO: handle non-Oks from reconcile
     ReconcilerAction {
         requeue_after: Some(Duration::from_secs(60)),
@@ -856,11 +860,11 @@ fn error_policy(_error: &Error, ctx: Context<()>) -> ReconcilerAction {
 if you have those, then it's just hooking up events and contexts:
 
 ```rust
-async fn main() -> Result<(), kube::Error> {
+async fn main() -> Resultᐸ(), kube::Errorᐳ {
     let client = Client::try_default().await?;
     let context = Context::new(()); // bad empty context - put client in here
-    let cmgs = Api::<ConfigMapGenerator>::all(client.clone());
-    let cms = Api::<ConfigMap>::all(client.clone());
+    let cmgs = Api::ᐸConfigMapGeneratorᐳ::all(client.clone());
+    let cms = Api::ᐸConfigMapᐳ::all(client.clone());
     Controller::new(cmgs, ListParams::default())
         .owns(cms, ListParams::default())
         .run(reconcile, error_policy, context)
