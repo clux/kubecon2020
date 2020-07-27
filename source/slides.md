@@ -408,7 +408,7 @@ notes:
 
 ```rust
 impl Resource {
-    pub fn namespacedᐸK: k8s_openapi::Resourceᐳ(ns: &str) -> Self {
+    pub fn namespaced<K: k8s_openapi::Resource>(ns: &str) -> Self {
         Self {
             api_version: K::API_VERSION.to_string(),
             kind: K::KIND.to_string(),
@@ -455,8 +455,8 @@ phrase i had never believed i had to use to describe software architecture, let 
 
 ```rust
 impl Resource {
-    pub fn create(&self, pp: &PostParams, data: Vecᐸu8ᐳ)
-        -> ResultᐸRequestᐸVecᐸu8ᐳᐳᐳ
+    pub fn create(&self, pp: &PostParams, data: Vec<u8>)
+        -> Result<Request<Vec<u8>
     {
         let base_url = self.make_url() + "?";
         let mut qp = Serializer::new(base_url);
@@ -479,13 +479,13 @@ notes:
 ### kube-rs: Typed API
 
 ```rust
-pub struct ApiᐸKᐳ {
+pub struct Api<K> {
     resource: Resource,
     client: Client,
-    phantom: PhantomDataᐸKᐳ,
+    phantom: PhantomData<K>,
 }
 
-let api: ApiᐸPodᐳ = Api::namespaced(client, ns);
+let api: Api<Pod> = Api::namespaced(client, ns);
 ```
 
 notes:
@@ -496,16 +496,16 @@ notes:
 ### kube-rs: Typed API methods
 
 ```rust
-implᐸKᐳ ApiᐸKᐳ
+impl<K> Api<K>
 where K: Clone + Deserialize + Metadata,
 {
     pub async fn create(&self, pp: &PostParams, data: &K)
-        -> ResultᐸKᐳ
+        -> Result<K>
     where K: Serialize,
     {
         let bytes = serde_json::to_vec(&data)?;
         let req = self.resource.create(&pp, bytes)?;
-        self.client.request::ᐸKᐳ(req).await
+        self.client.request::<K>(req).await
     }
 }
 ```
@@ -692,9 +692,9 @@ notes:
 ### Example: Using a CRD
 
 ```rust
-let crds: ApiᐸCustomResourceDefinitionᐳ = Api::all(client);
+let crds: Api<CustomResourceDefinition> = Api::all(client);
 crds.create(&pp, &Foo::crd()).await;
-let foos: ApiᐸFooᐳ = Api::namespaced(client, &namespace);
+let foos: Api<Foo> = Api::namespaced(client, &namespace);
 
 let f = Foo::new("eirik-example", FooSpec {
     name: "i am a foo crd instance".into(),
@@ -725,10 +725,10 @@ SKIP DUE TO https://github.com/clux/kube-rs/issues/43 FIXED IN SS APPLY?
 
 ```rust
     pub async fn watch(&self, lp: &ListParams, rv: &str)
-        -> Resultᐸimpl StreamᐸItem = ResultᐸWatchEventᐸKᐳᐳᐳᐳ
+        -> Result<impl Stream<Item = Result<WatchEvent<K>
     {
         let req = self.resource.watch(&lp, &rv)?;
-        self.client.request_events::ᐸKᐳ(req).await
+        self.client.request_events::<K>(req).await
     }
 ```
 
@@ -755,12 +755,11 @@ and finally, the obscene amount of data this can return. Tried using a node info
 
 ---
 ### WatchEvent
-That said, the `WatchEvent` itself is nice. Remember how watch events all packed an object inside of it? We can model this in rust with generic enums:
 
 ```rust
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(tag = "type", content = "object", rename_all = "UPPERCASE")]
-pub enum WatchEventᐸKᐳ {
+pub enum WatchEvent<K> {
     Added(K),
     Modified(K),
     Deleted(K),
@@ -769,16 +768,27 @@ pub enum WatchEventᐸKᐳ {
 }
 ```
 
-The serde tags here tells serde that the values of the enum variants are put inside on the object key, and the enum variant name on a key call tag (which are sent/recvd as uppercase - to match go convention). so this is actually really nice.
+notes:
+- That said, the `WatchEvent` itself is nice. The embedded object can be packed into a generic enum.
+- The serde tags here tells serde that the values of the enum variants are put inside on the object key, and the enum variant name on a key call tag (which are sent/recvd as uppercase - to match go convention). so this is actually really nice.
+- note that bookmark is not `K`
 
-that's how that would look. however, this is one of those small cases where kubernetes actually pulls out all the optionals.
+---
+### WatchEvent::Bookmark
 
 ```json
-{"type":"BOOKMARK","object":{"kind":"Pod","apiVersion":"v1","metadata":{"resourceVersion":"3845","creationTimestamp":null},"spec":{"containers":null},"status":{}}}
+{"type":"BOOKMARK","object":{ \
+    "kind":"Pod","apiVersion":"v1", \
+    "metadata":{"resourceVersion":"3845","creationTimestamp":null},\
+    "spec":{"containers":null},"status":{}}}
 ```
 
-no spec, no name, kind Pod.
-so that actually validates `metadata.name` being optional (even if we didn't have a generatename mechanism).
+[k8s-openapi#70](https://github.com/Arnavion/k8s-openapi/issues/70#issuecomment-651224856)
+
+notes:
+- no spec, no name, kind Pod.
+- so that actually validates `metadata.name` being optional (even if we didn't have a generatename mechanism)
+- however, it sets containers to `null`, which is actually against spec so openapi dependents can't actually parse this (need to raise this upstream)
 
 ---
 ## Runtime
@@ -797,7 +807,7 @@ It's an amazing technical achievement that makes it really easy to integrate int
 Informer-like. But FSM.
 
 ```rust
-enum StateᐸK: Meta + Cloneᐳ {
+enum State<K: Meta + Clone> {
     /// Empty state, awaiting a LIST
     Empty,
     /// LIST complete, can start watching
@@ -817,9 +827,9 @@ the last magic there is just "a stream of WatchEvent results of type K", put ins
 Builds on top of watcher and adds a store.
 
 ```rust
-let cms: ApiᐸConfigMapᐳ = Api::namespaced(client, &namespace);
+let cms: Api<ConfigMap> = Api::namespaced(client, &namespace);
 
-let store = reflector::store::Writer::ᐸConfigMapᐳ::default();
+let store = reflector::store::Writer::<ConfigMap>::default();
 let reader = store.as_reader();
 let rf = reflector(store, watcher(cms, lp));
 ```
@@ -829,8 +839,8 @@ Move ensures no use after construction. Writer disappears. No weird contracts in
 what is a reflector?
 
 ```rust
-pub fn reflectorᐸK: Meta + Clone, W: StreamᐸItem = Resultᐸwatcher::EventᐸKᐳᐳᐳᐳ(mut store: store::WriterᐸKᐳ, stream: W)
-    -> impl StreamᐸItem = W::Itemᐳ
+pub fn reflector<K: Meta + Clone, W: Stream<Item = Result<watcher::Event<K>(mut store: store::Writer<K>, stream: W)
+    -> impl Stream<Item = W::Item>
 {
     stream.inspect_ok(move |event| store.apply_watcher_event(event))
 }
@@ -843,13 +853,13 @@ You define 2 fns. One where you write idempotent (not going to talk about how to
 Second one is an error handler. You might want to check every error dilligently within the reconciler, but you can also just use `?`.
 
 ```rust
-async fn reconcile(g: ConfigMapGenerator, ctx: Contextᐸ()ᐳ) -> Result<ReconcilerAction, Error> {
+async fn reconcile(g: ConfigMapGenerator, ctx: Context<()>) -> Result<ReconcilerAction, Error> {
     // TODO: reconcile
     Ok(ReconcilerAction {
         requeue_after: Some(Duration::from_secs(300)),
     })
 }
-fn error_policy(_error: &Error, ctx: Contextᐸ()ᐳ) -> ReconcilerAction {
+fn error_policy(_error: &Error, ctx: Context<()>) -> ReconcilerAction {
     // TODO: handle non-Oks from reconcile
     ReconcilerAction {
         requeue_after: Some(Duration::from_secs(60)),
@@ -860,11 +870,11 @@ fn error_policy(_error: &Error, ctx: Contextᐸ()ᐳ) -> ReconcilerAction {
 if you have those, then it's just hooking up events and contexts:
 
 ```rust
-async fn main() -> Resultᐸ(), kube::Errorᐳ {
+async fn main() -> Result<(), kube::Error> {
     let client = Client::try_default().await?;
     let context = Context::new(()); // bad empty context - put client in here
-    let cmgs = Api::ᐸConfigMapGeneratorᐳ::all(client.clone());
-    let cms = Api::ᐸConfigMapᐳ::all(client.clone());
+    let cmgs = Api::<ConfigMapGenerator>::all(client.clone());
+    let cms = Api::<ConfigMap>::all(client.clone());
     Controller::new(cmgs, ListParams::default())
         .owns(cms, ListParams::default())
         .run(reconcile, error_policy, context)
