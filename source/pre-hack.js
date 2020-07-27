@@ -7,7 +7,7 @@ module.exports = (markdown, options) => {
         .map((line, index) => {
           if (!/^```/.test(line) || index === 0) {
             if (in_code) {
-              return line.replace('<', "&lt").replace('>', '&gt');
+              return line.replace(new RegExp('<', 'g'), "&lt").replace(new RegExp('>', 'g'), '&gt');
             }
             return line;
           }

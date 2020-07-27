@@ -456,7 +456,7 @@ phrase i had never believed i had to use to describe software architecture, let 
 ```rust
 impl Resource {
     pub fn create(&self, pp: &PostParams, data: Vec<u8>)
-        -> Result<Request<Vec<u8>
+        -> Result<Request<Vec<u8>>>>
     {
         let base_url = self.make_url() + "?";
         let mut qp = Serializer::new(base_url);
