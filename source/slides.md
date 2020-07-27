@@ -21,7 +21,7 @@
 
 notes:
 - eirik/clux - one of the main maintainers on kube-rs.
-- talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, _these properties_ are generally enforced through consistency and code-generation steps.
+- talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, _these invariants are generally enforced through consistency and code-generation steps.
 
 ---
 ### Hidden Generics in Kubernetes' API
@@ -46,6 +46,7 @@ Yes, there are some broken invariants, but kubernetes is still remarkably consis
 
 - [apimachinery/meta/v1/types.go](https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.g)
 - [client-go/kubernetes/typed](https://github.com/kubernetes/client-go/tree/master/kubernetes/typed)
+- [kubernetes.io/docs/concepts](https://kubernetes.io/docs/concepts/)
 
 notes:
 - Let's talk about what kubernetes actually provides.
@@ -96,7 +97,7 @@ type ObjectMeta struct {
 ```
 
 notes:
-- Core metadata everyone thinks about. Simplified view, hidden read-only properties. Every object MUST have it, and must look like this.
+- Core metadata everyone thinks about. Simplified view, hidden read-only properties, annotations, everything is optional. Every object MUST have it, and must look like this.
 - OwnerReferences, labels, annotations, finalizers, managed fields that all can go in there, and they're standardised.
 
 ---
@@ -157,7 +158,7 @@ type ListOptions struct {
 ```
 
 notes:
-- GetOptions, ListOptions, DeleteOptions, PatchOptions.
+- All API params: GetOptions, ListOptions, DeleteOptions, PatchOptions.
 - All parameters that the API accepts encapsulated into common structs from this root file.
 - Error responses.
 - LabelSelectors sitting inside ListOptions, so there's a generic way of filtering
@@ -169,6 +170,7 @@ notes:
 - 928 lines of comments
 
 notes:
+- all this in 300 lines of code
 - So I am raving this about this, but it's because of the consistency and complete adoption of everything in this file; that kubernetes feels so consistent and why we can actually make generic assumptions in other languages.
 - lets look at client-go for a contrast
 
@@ -194,7 +196,8 @@ type DeploymentInterface interface {
 notes:
 - typed api methods in client go
 - getters/updaters/patchers/replacers/listers/deleters/watchers
-- 200 line file for this struct
+- 200 line file for this object
+- go to pod, show same except subresouce and object it acts on
 
 ---
 #### client-go: Pod
@@ -216,10 +219,9 @@ type PodInterface interface {
 ```
 
 notes:
-- takes same params as deployment
 - same story for every object
-- this is a 200 line file for deployment. there's one for every object?
-- how could be this possibly be consistent?
+- so.. there's a 200 line file for object
+- Q: how could be this possibly be consistent? A: in the header
 
 ---
 #### client-go: header
@@ -232,7 +234,7 @@ package v1
 ```
 
 notes:
-- right. all of this is generated.
+- all of this is generated.
 - because people recognised that you **have** to enforce some of these assumptions for them to stick.
 - now, this isn't generics, but it's consistency. for each, kind, the specific structs are specialized via external code generation - but the gen. source is present in repo regardless
 
@@ -242,18 +244,19 @@ notes:
 - tons of generated code per object
 - [specialized client api](https://github.com/kubernetes/client-go/tree/master/kubernetes/typed)
 - [specialized informers](https://github.com/kubernetes/client-go/blob/master/informers/apps/v1/statefulset.go#L58-L78)
-- `>` 100K lines of code  <!-- .element: class="fragment" -->
+- more than 100K lines of code  <!-- .element: class="fragment" -->
 
 notes:
-- consequence; much code
+- much code
 - client api, also informers for every object
 - as a result; client-go > 100K LOC (without vendoring)
-
-and again i'm not trying to judge here. this is great.
+- and again i'm not trying to judge here. this is great.
 the fact that everything looks the same in here, is what enables `kubectl` to provide such a consistent interface.
 
-### api endpoints
-url consistency lets us make easy mappings between types and urls
+---
+### kubernetes.io: api endpoints
+
+[api-concepts#standard-api-terminology](https://kubernetes.io/docs/reference/using-api/api-concepts/#standard-api-terminology)
 
 **Cluster-scoped resources**
 ```
@@ -267,9 +270,10 @@ GET /apis/GROUP/VERSION/namespaces/NAMESPACE/RESOURCETYPE
 GET /apis/GROUP/VERSION/namespaces/NAMESPACE/RESOURCETYPE/NAME
 ```
 
-https://kubernetes.io/docs/reference/using-api/api-concepts/#standard-api-terminology
 
-though things start to break down a little bit here even though this is straight out of the "Standard API Terminology" page on the kubernetes website.
+notes:
+- url consistency lets us make easy mappings between types and urls
+- though things start to break down a little bit
 
 ### Broken: empty api group
 because this does not hold for pods, nodes, namespaces (TODO: more ex), and any other type in the core object list. they have a different url that starts with `api` rather than `apis`.
