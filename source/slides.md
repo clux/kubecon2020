@@ -31,9 +31,9 @@ notes:
 - Async Rust <!-- .element: class="fragment" -->
 
 notes:
-- We'll identify some of these invariants.
+- We'll identify some of these invariants while covering parts the kubernetes codebase.
 - Then talk about how to model the same api in rust using generics, and see that it gives us the same consistency more-or-less for free.
-- We'll also touch on async api design in rust during this modelling process. Async rust was only properly released about a year ago, and the rust ecosystem has consequently seen enormous advances in this year with it stable. So if you're not up to speed, you'll at least see some patterns in this talk.
+- We'll also touch on async api design in rust during this modelling process. Since async rust was only properly released about a year ago, so if you're not familiar, you'll at least see some of the now more established patterns.
 
 
 <!--Still, it's not a magic bullet. Kubernetes is written in Go; Any broken invariants on the Go side would still need to be respected in rust land.
@@ -173,7 +173,7 @@ notes:
 notes:
 - all this in 300 lines of code
 - So I am raving this about this, but it's because of the consistency and complete adoption of everything in this file; that kubernetes feels so consistent and why we can actually make generic assumptions in other languages.
-- lets look at client-go for a contrast
+- now, writing structs is one thing, but how do we ensure these are consistent reused? lets look at client-go for a size contrast.
 
 ---
 #### client-go: Deployment
@@ -195,7 +195,7 @@ type DeploymentInterface interface {
 ```
 
 notes:
-- typed api methods in client go
+- typed api methods in client go (just the interface)
 - getters/updaters/patchers/replacers/listers/deleters/watchers
 - 200 line file for this object
 - go to pod, show same except subresouce and object it acts on
@@ -236,8 +236,9 @@ package v1
 
 notes:
 - all of this is generated.
-- because people recognised that you **have** to enforce some of these assumptions for them to stick.
-- now, this isn't generics, but it's consistency. for each, kind, the specific structs are specialized via external code generation - but the gen. source is present in repo regardless
+- and, it might seem obvious, you **have** to enforce some of these assumptions for them to stick, but it's still kind of crazy
+- it's literally manual generics, with a bunch of glue to make it work.
+- but it's consistent. for each, kind, the specific structs are specialized via external code generation, and the gen. source is present in repo
 
 ---
 #### client-go
@@ -250,9 +251,10 @@ notes:
 notes:
 - much code
 - client api, also informers for every object
-- as a result; client-go > 100K LOC (without vendoring)
-- and i'm not trying to judge here. this is great.
-the fact that everything looks the same in here, is what enables `kubectl` to provide such a consistent interface.
+- NEXT: as a result; client-go > 100K LOC (without vendoring)
+- and i'm not at all passing judgement at this. this is great.
+the fact that everything looks the same in here, is what enables `kubectl` to provide such a consistent interface, even if the language makes it hard for you to do so.
+- moving on to documented concepts
 
 ---
 ### kubernetes.io: api endpoints
@@ -311,8 +313,7 @@ notes:
 - this is how it looks (this response contains two lines)
 - you'll get a chunked response, typically 1 line per chunk, but you'll have to buffer yourself until you have a complete line, because each of these lines can exceed the MTU
 - but then for each line, you can parse the inner object as the type you actually want
-- it also returns the etcd resource version we last saw (resume point in some sense)
-- all apis use this and it's consistent.
+- all apis use this and it's consistent -> source
 
 
 ---
@@ -336,9 +337,9 @@ type WatchEvent struct {
 }
 ```
 notes:
-- from source, more runtime generics.
+- we find more runtime generics.
 - covered all concepts and main api consistencies now
-- at this point we have actually covered all the core ideas we need to talk about this from the rust POV
+- so the rest will be more from a rust POV
 
 ---
 ### Rust Modelling
@@ -347,10 +348,11 @@ notes:
 - Arnav Singh / @Arnavion - [k8s-openapi](https://github.com/Arnavion/k8s-openapi)
 
 notes:
-- and the rest of the talk will feature a grab bag of different rust code, shown here in slightly simplified code here, much of which are from kube-rs
-- but also huge shoutout to Arnav Singh
+- like the go code, will be slightly simplifying for readability, and most of the stuff here is kube-rs
+- but start out with code in a project by Arnav Singh aka Arnavion
 - the project really is the lynchpin that makes any generics possible
 - generates rust structures from openapi schemas, plus factoring out some of "the consistency" into a few traits that is then implemented for these structures
+- so huge shoutout to him. he's super helpful and thorough, and that's just his side project, so always feel bad bothering him.
 
 ---
 ### k8s-openapi: Resource Trait
@@ -380,7 +382,7 @@ pub trait Metadata: Resource {
 
 notes:
 - Trait is just a way to grab metadata that is consistent across all objects.
-- For this to be implementable the type kind of needs to be the same.
+- Even if always on same key, type system can't guarantee that.
 - Slightly simplifying; as the actual one is slightly more general, and allows parametrising the metadata types. Not super relevant, but: all listable types uses `ListMeta`, but everything else returns `ObjectMeta`
 - But we (kube-rs) can only really do useful ops on top of objects that have `ObjectMeta`, so theres' slightly more indirection for us to actually get the the behaviour we want.
 
@@ -388,7 +390,6 @@ notes:
 ### kube-rs: Resource struct
 
 ```rust
-#[derive(Clone, Debug)]
 pub struct Resource {
     pub api_version: String,
     pub group: String,
@@ -401,7 +402,7 @@ pub struct Resource {
 notes:
 - Got two root traits. Let's build a dynamic api on top of them.
 - You may note that this is basically a dynamic version of the `Resource` trait, but it allows carrying the dynamic namespace property and can be instantiated at runtime from an arbitrary object (helpful for CRDs).
-- For CRDs we can create this manually, with like a builder, but for existing openapi structs can get a blanket ctor with one trait constrait:
+- So can create this dynamically, with like a builder, but for existing openapi structs, can get a blanket ctor with one trait constrait:
 
 ---
 ### kube-rs: Resource namespaced ctor
@@ -423,7 +424,9 @@ impl Resource {
 ```
 
 Notes:
+- Using resource trait, rename it to avoid confusion with struct.
 - This constraint does not require the struct to implement the trait, it just needs it for that quick constructor
+- Then we have everything we need to query it on the api. Demonstrate: mapper
 
 ---
 ### kube-rs: Url mapper
@@ -443,7 +446,7 @@ impl Resource {
 ```
 
 notes:
-- We can also create the function that dictates all of k8s urls on top of this struct
+- function that dictates all of k8s urls on top of this struct
 - handles that special empty group case
 - CAVEAT: due to limitation of the trtait: load-bearing pluralize.
 phrase i had never believed i had to use to describe software architecture, let alone from my own designs, but here we are.
@@ -470,8 +473,10 @@ impl Resource {
 ```
 
 notes:
+- Create as ex. for basic crud.
+- Takes one of the PostParam structs (types.go), binary data, makes qp from postparams, and preps request. You must execute yourself. Sans-io.
 - This is now something similar to other language clients. Bytes come in, goes through a url mapper and an http call, and response bytes come out.
-- Of course, this isn't really what we want. We don't want to be interjecting at every point of the way to try to deserialize a bytestream into a concrete type.
+- Of course, this isn't really what we want. We don't want to be interjecting at every point, to try deserialize a bytestream into a concrete type.
 - What we really want, is automatic serialization of an instantiated object, and automatic deserialization of the response type into the correct object.
 
 ---
@@ -488,8 +493,11 @@ let api: Api<Pod> = Api::namespaced(client, ns);
 ```
 
 notes:
-- For that we our first truly generic type. It's a wrapper around a resource, and we put a copy of a http client inside of it, along with an empty marker of what type it's for (need to coerce somewhere - api only handles one object type)
-- But notice there were no constraints on `K` here - they come in impls
+- For that we our first truly generic type. It's a wrapper around a resource, with a handle to an http client inside of it, along with an empty marker of what type it's for (need to coerce somewhere - api only handles one object type)
+- NB: Resource depends on K.
+- Make a simple ctor that calls Resource::namespaced
+- Usage: pass on all data for the 2, coerce to the type you want.
+- Let's generalize create.
 
 ---
 ### kube-rs: Typed API methods
@@ -512,7 +520,8 @@ where K: Clone + Deserialize + Metadata,
 notes:
 - weird syntax? generic impls, K needs to satisfy constraints
 - K needs extra constraints for one method
-- By using generics and constraints on `K` we can implement `client-go` like api methods on our `Api` struct across all types a single blanket impl.
+- Uses serialize trait, and tells client to execute req and deserialize
+- By using generics and constraints on `K` we have implement this `client-go` like api method, across all types just a single blanket impl.
 - ..that's kind of the real selling point. But is generics enough? Won't we still need codegen?
 
 
@@ -528,8 +537,9 @@ notes:
 notes:
 - Yes, code generation still happens in rust. But it's a required part of cargo build to execute.
 - Called proc macros, and I like to desc as "compile time decorators"
-- Tricky to write, but user interface to them becomes super clean ^
-- That first class support for code generation basically eliminates a whole class of errors where you are operating on a stale version of generated code, because the compiler disallows that possibility.
+- user interface to them is super compelling, though tricky to write
+- But because of that first class support for code generation, a whole class of errors where you are operating on a stale version of generated code, is now elimiated. The compiler disallows that possibility.
+- Cargo expand to see code, but more for dev.
 
 ---
 ### Serialize
@@ -545,8 +555,8 @@ pub struct FooSpec {
 ```
 
 notes:
-- Just the basic derives that almost everyone uses for `Serialize` and `Deserialize` from the `serde` library. This gives you serialization and deserialization methods that all follow standard traits.
-- In practice, you often end up writing much of the same annotations as you would with go's json encoding to like distinguish casings of your code and disk format, but there's type safety around it. Not just comments in backticks.
+- First example everyone sees is derive `Serialize` + `Deserialize` from the `serde` library. Implements these traits and allows you to convert between various serialization formats. Can customize it further with struct level, or field level attributes.
+- In practice, you often end up writing much of the same gunk/annotations as you would with go's json encoding to like distinguish casings of your code and disk format, but there's type safety + error handling around it.
 
 ---
 ### kube-derive: CustomResource
@@ -562,8 +572,9 @@ pub struct FooSpec {
 ```
 
 notes:
-- And we can also make our own derive rules and options for it. Here we are using kube's `CustomResource` proc-macro, and we are telling kube what the resource parameters are (group, version, kind). This will create all the code around a custom resource.
-- We've tried to mimic some of the usability of kubebuilder here, but without any of the stored generated code.
+- We can also make our own derivable with our own options for it. Here we are using kube's `CustomResource` proc-macro, and we are telling kube, the values of the resource parameters (group, version, kind). This will create all the code around a custom resource.
+- Bunch of options there, we've tried to mimic the usability of kubebuilder setup in this particular case.
+- What it does: creating a type Foo attaching spec/status/meta, ctor, crd method.
 
 ---
 ### Example: Using a CRD
@@ -583,7 +594,8 @@ let o = foos.create(&pp, &f2).await?;
 
 notes:
 - The generated `Foo` type (containing metadata, spec, pointing to your spec, etc), also has a `crd` method. So you can literally just apply it and start using it in like `main`.
-- ideally, error handle and use server side apply.
+- ideally, error handle and use server side apply. illustrative.
+- crud, ez, same principle, but the hard problem is really watch.
 
 ---
 ### Watch
@@ -602,25 +614,10 @@ where K: Clone + Deserialize + Metadata,
 ```
 
 notes:
-- Talked about basic crud operations (same pricinple as `create`).
-- One that is fundamentally different is watch. Watch is chunked. It's async.
-- So watch returns a complicated type that implements the Stream trait (impl Stream). Stream == async iterator. Have to await each new element.
+- What watch looks like. Fundamentally different. Chunked. Async.
+- Here watch returns a complicated type that implements the Stream trait (impl Stream). Stream == async iterator. Have to await each new element.
 - Wrapped in result because HTTP req can fail, so if that succeeded then you are streaming - fairly chonky type
-
----
-### Broken: Watch
-
-- resourceVersion bookkeeping <!-- .element: class="fragment" -->
-- stale resourceVersions <!-- .element: class="fragment" -->
-- 5 minute limit <!-- .element: class="fragment" -->
-- large data use <!-- .element: class="fragment" -->
-
-notes:
-- Watch is awkward. ResourceVersions integers passed on via etcd, that you have to track and pass on every watch call to tell k8s where you left off.
-- Sometimes these RVs are stale, and if you are building a state cache like a reflector, you have to re-list and get all the state back for every object in the system if you get desynchronized. Before bookmarks, that was very likely to happen.
-- Watch calls also can't reliably stay open for more than 5 minutes, so you have to keep issuing this watch call at least that frequently.
-- and finally, the obscene amount of data this can return. Tried using a node informer? insane amount of noise. FULL 10k data every 5s because the conditions in its status object contain a last updated timestamp...
-- TODO: link to issues
+- and watchevents?
 
 ---
 ### WatchEvent
@@ -639,8 +636,36 @@ pub enum WatchEvent<K> {
 ```
 
 notes:
-- That said, the `WatchEvent` itself is nice. The embedded object can be packed into a generic enum.
-- The serde tags here tells serde that the values of the enum variants are put inside on the object key, and the enum variant name on a key call tag (which are sent/recvd as uppercase - to match go convention). so this is actually really nice.
+- map to the one in apimacinery containing a dynamic runtime object. The embedded object can be packed into a generic rust enum, for a fully typed one.
+- The serde tags here tells serde that the values in enum variants -> in object key, and enum variant name -> in tag key (tags sent/recvd as uppercase to match go convention).
+- can represent watchevents + stream of watchevents, but still more work (coz watch cornercases)
+
+---
+### Broken: Watch
+
+- resourceVersion bookkeeping <!-- .element: class="fragment" -->
+- stale resourceVersions <!-- .element: class="fragment" -->
+- 5 minute limit <!-- .element: class="fragment" -->
+- large data use <!-- .element: class="fragment" -->
+
+notes:
+- Gotta Track ResourceVersions; integers passed on via etcd, must pass these on for every watch call, to tell k8s where you left off.
+- Sometimes these RVs are stale, and if you are building a state cache like a reflector, you have to re-list and get all the state back for every object in the system if you get desynchronized. Before bookmarks, that was very likely to happen.
+- Watch calls also can't reliably stay open for more than 5 minutes, so you have to keep issuing this watch call at least that frequently.
+- and finally, sheer data use of it. On EVERY CHANGE incl status. Seen NodeStatus, last updated timestamps inside conditions? Every few seconds, you'll get the whole heckin' object. (Can hide, but still networked)
+- TODO: link to issues
+
+---
+### kube: watcher/informer abstraction?
+
+- LIST
+- stream
+- handle stream errors behind the scenes
+- maybe RE-LIST (duplicate + dropped events)
+- propagate user errors
+- only propagate events
+
+notes:
 - How to build on top of watch and the api. Well we got to watch continously, but not longer than 5 minutes, propagate all user errors, retry/re-list on desync errors, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
 
 ---
@@ -660,6 +685,7 @@ notes:
 ---
 ### kube-runtime: watcher
 
+TODO: better intro before FSM?
 ```rust
 enum State<K: Meta + Clone> {
     /// Empty state, awaiting a LIST
@@ -735,7 +761,7 @@ notes:
 ```rust
 async fn main() -> Result<(), kube::Error> {
     let client = Client::try_default().await?;
-    let context = Context::new(()); // bad empty context - put client in here
+    let context = Context::new(SomeData::new());
     let cmgs = Api::<ConfigMapGenerator>::all(client.clone());
     let cms = Api::<ConfigMap>::all(client.clone());
 
