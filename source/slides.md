@@ -337,6 +337,8 @@ type WatchEvent struct {
 ```
 notes:
 - from source, more runtime generics.
+- covered all concepts and main api consistencies now
+- at this point we have actually covered all the core ideas we need to talk about this from the rust POV
 
 ---
 ### Rust Modelling
@@ -345,7 +347,6 @@ notes:
 - Arnav Singh / @Arnavion - [k8s-openapi](https://github.com/Arnavion/k8s-openapi)
 
 notes:
-- at this point we have actually covered all the core ideas we need to talk about this from the rust POV
 - and the rest of the talk will feature a grab bag of different rust code, shown here in slightly simplified code here, much of which are from kube-rs
 - but also huge shoutout to Arnav Singh
 - the project really is the lynchpin that makes any generics possible
@@ -407,6 +408,7 @@ notes:
 
 ```rust
 use k8s_openapi::Resource as ResourceTrait;
+
 impl Resource {
     pub fn namespaced<K: ResourceTrait>(ns: &str) -> Self {
         Self {
@@ -639,6 +641,7 @@ pub enum WatchEvent<K> {
 notes:
 - That said, the `WatchEvent` itself is nice. The embedded object can be packed into a generic enum.
 - The serde tags here tells serde that the values of the enum variants are put inside on the object key, and the enum variant name on a key call tag (which are sent/recvd as uppercase - to match go convention). so this is actually really nice.
+- How to build on top of watch and the api. Well we got to watch continously, but not longer than 5 minutes, propagate all user errors, retry/re-list on desync errors, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
 
 ---
 ### kube-runtime
@@ -650,7 +653,6 @@ notes:
 - Controller <!-- .element: class="fragment" -->
 
 notes:
-- How to build on top of watch and the api. Well we got to watch continously, but not longer than 5 minutes, propagate all user errors, retry/re-list on desync errors, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
 - So a huge shoutout to my other maintainer: Teo.
 - He basically figured out an entirely Stream based solution for watchers/reflectors and controllers, and rewrote that entire module of `kube`.
 - It's an amazing technical achievement that makes it really easy to integrate into your application.
@@ -673,6 +675,7 @@ enum State<K: Meta + Clone> {
 ```
 
 notes:
+- TODO: awful explanation - another slide first
 - Informer-like. But FSM.
 - the last magic there is just "a stream of WatchEvent results of type K", put inside a box on the heap.
 
