@@ -99,7 +99,7 @@ type ObjectMeta struct {
 
 notes:
 - Core metadata everyone thinks about. Simplified view, hidden read-only properties, annotations, everything is optional. Every object MUST have it, and must look like this.
-- OwnerReferences, labels, annotations, finalizers, managed fields that all can go in there, and they're standardised.
+- OwnerReferences, labels, annotations, finalizers, all great, managed fields (shrug) all that can go in there, and they're standardised.
 
 ---
 #### types.go: List
@@ -344,8 +344,12 @@ notes:
 ---
 ### Rust Modelling
 
-- [kube-rs](https://github.com/clux/kube-rs/)
-- Arnav Singh / @Arnavion - [k8s-openapi](https://github.com/Arnavion/k8s-openapi)
+<ul>
+    <li class="fragment"><a href="https://github.com/clux/kube-rs/">clux/kube-rs</a></li>
+    <li class="fragment">Arnav Singh / @Arnavion - <a href="https://github.com/Arnavion/k8s-openapi">k8s-openapi</a></li>
+</ul>
+
+<small class="fragment">Bryan Liles: <a href="https://youtu.be/Rbe0eNXqCoA?t=566">client-go is not for mortals</a></small>
 
 notes:
 - like the go code, will be slightly simplifying for readability, and most of the stuff here is kube-rs
@@ -353,6 +357,7 @@ notes:
 - the project really is the lynchpin that makes any generics possible
 - generates rust structures from openapi schemas, plus factoring out some of "the consistency" into a few traits that is then implemented for these structures
 - so huge shoutout to him. for what i believe is just his side project, i really cannot thank him enough
+- motivation a bit out of need - but also partly out of the call to action by bryan liles at kubecon barcelona
 
 ---
 ### k8s-openapi: Resource Trait
@@ -528,11 +533,13 @@ notes:
 ---
 ### Code Generation
 
-- first class integration via cargo build <!-- .element: class="fragment" -->
-- [procedural macros](https://doc.rust-lang.org/reference/procedural-macros.html) <!-- .element: class="fragment" -->
-- #[derive(CustomTrait)] <!-- .element: class="fragment" -->
-- #[custom_trait_attr] <!-- .element: class="fragment" -->
+<ul>
+    <li class="fragment">first class integration via cargo build</li>
+    <li class="fragment"><a href="https://doc.rust-lang.org/reference/procedural-macros.html">procedural macros</a></li>
+    <li class="fragment">#[derive(CustomTrait)]</li>
+    <li class="fragment">#[custom_trait_attr]</li>
 <!--- cargo expand-->
+</ul>
 
 notes:
 - Yes, code generation still happens in rust. But it's a required part of cargo build to execute.
@@ -617,7 +624,7 @@ notes:
 - 1st WE: maps nicely one in apimachinery that contained the dynamic runtime object.
 - In rust, it can be packed into a generic enum, for a fully typed one. Great.
 - The serde tags here tells serde that the values in enum variants -> in object key, and enum variant name -> in tag key (tags sent/recvd as uppercase to match go convention).
-- ..This is what watch would return right?
+- ..This is what watch would return...
 
 ---
 ### Watch
@@ -642,15 +649,17 @@ notes:
 - Element? WatchEvent that can fail <- Stream of
 - stream is also wrapped in result because HTTP req can fail, so that has to succeed before you can start streaming
 - fairly chonky type
-- looks hard immediately, and haven't even talked about watch cornercases
+- looks hard immediately, and haven't even talked about the corner cases..
 
 ---
 ### Broken: Watch
 
-- resourceVersion bookkeeping <!-- .element: class="fragment" -->
-- stale resourceVersions <!-- .element: class="fragment" -->
-- 5 minute limit <!-- .element: class="fragment" -->
-- large data use <!-- .element: class="fragment" -->
+<ul>
+<li class="fragment">resourceVersion bookkeeping</li>
+<li class="fragment">stale resourceVersions <a href="https://github.com/kubernetes/kubernetes/issues/87292">#87292</a></li>
+<li class="fragment">5 minute max limit <a href="https://github.com/kubernetes/kubernetes/issues/6513">#6513</a></li>
+<li class="fragment">large data use <a href="https://github.com/kubernetes/kubernetes/issues/90339">#90339</a>, <a href="https://github.com/kubernetes/kubernetes/issues/82655">#82655</a></li>
+</ul>
 
 notes:
 - Gotta Track ResourceVersions; integers passed on via etcd, must pass these on for every watch call, to tell k8s where you left off.
@@ -658,39 +667,44 @@ notes:
 - Watch calls also can't reliably stay open for more than 5 minutes, so you have to keep issuing this watch call at least that frequently.
 - and finally, sheer data use of it. On EVERY CHANGE incl status. Seen NodeStatus, last updated timestamps inside conditions? Every few seconds, you'll get the whole heckin' object. (Can hide, but still networked)
 - => anyone building a controller type solution will need abstractions.
-- TODO: link to issues
 
 ---
-### kube: watcher/informer abstraction?
+### watcher abstraction
 
-- LIST
-- stream
-- handle stream errors behind the scenes
-- maybe RE-LIST (duplicate + dropped events)
-- propagate user errors
-- only propagate events
+<ul class="fragment">
+  <li>LIST</li>
+  <li>stream</li>
+  <li>handle stream errors behind the scenes</li>
+  <li>maybe RE-LIST (duplicate + dropped events)</li>
+  <li>propagate user errors</li>
+  <li>only propagate events</li>
+</p>
 
 notes:
-- How to build on top of watch and the api. Well we got to watch continously, but not longer than 5 minutes, propagate all user errors, retry/re-list on desync errors, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
+- what would such an abstraction do?
+- Well we got to watch continously, but not longer than 5 minutes, propagate all user errors, re-list on desync errors, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
 
 ---
 ### kube-runtime
 
-- Teo K. Röijezon / @teozkr
-- Entirely Stream based solution <!-- .element: class="fragment" -->
-- watcher <!-- .element: class="fragment" -->
-- reflector with Store <!-- .element: class="fragment" -->
-- Controller <!-- .element: class="fragment" -->
+<ul>
+  <li class="fragment">Teo K. Röijezon / <a href="https://github.com/teozkr/">@teozkr</a></li>
+  <li class="fragment">Entirely Stream based solution</li>
+  <li class="fragment">watcher</li>
+  <li class="fragment">reflector with Store</li>
+  <li class="fragment">Controller</li>
+</ul>
 
 notes:
 - So a huge shoutout to my other maintainer: Teo.
-- He basically figured out an entirely Stream based solution for watchers/reflectors and controllers, and rewrote that entire module of `kube`.
-- It's an amazing technical achievement that makes it really easy to integrate into your application.
+- He basically figured out an entirely Stream based solution for (not only) watchers, but also reflectors and controllers
+- and because these objects are just this rust native concept of a stream, they end up being possible to manipulate them in very standard ways; store, pass around, extend, integrate, instrument, test
+- we've not gotten around to showcase, nor poc all of that, and this definitely has rough edges, but it's definitely the best evolution point so far for a controller-runtime in rust
+- so will quickly go through how they work
 
 ---
 ### kube-runtime: watcher
 
-TODO: better intro before FSM?
 ```rust
 enum State<K: Meta + Clone> {
     /// Empty state, awaiting a LIST
@@ -706,35 +720,97 @@ enum State<K: Meta + Clone> {
 ```
 
 notes:
-- TODO: awful explanation - another slide first
-- Informer-like. But FSM.
-- the last magic there is just "a stream of WatchEvent results of type K", put inside a box on the heap.
+- Funnily enough, watchers end up being one of the more complicated of the three. Entirely due to watch corner cases.
+- Informer-like. But FSM. Not only passing watch events (ultimate purpose), but also moving around the state as it changes (represented here).
+- Now this is all just using move semantics in rust so it ends up being efficient, but you gotta actually try to flatten the stream to get what you need.
+
+---
+### kube-runtime: watcher usage
+
+```rust
+let cms: Api<ConfigMap> = Api::namespaced(client, &namespace);
+let lp = ListParams::default();
+
+let mut w = try_flatten_applied(watcher(cms, lp)).boxed();
+while let Some(event) = w.try_next().await? {
+    info!("Got: {:?}", event);
+}
+```
+
+notes:
+- suppose i only want to subscribe to Added or Modified ew for ConfigMaps, in some namespace, this is how that would look. that could basically be your main.
+- line 4; watcher on configmaps, flatten and filter to applied events
+- handles all the watch complexity
 
 ---
 ### kube-runtime: reflector
+
+
+```rust
+pub fn reflector<K, W>(mut store: Writer<K>, stream: W)
+    -> impl Stream<Item = W::Item>
+where
+    K: Metadata + Clone,
+    W: Stream<Item = Result<watcher::Event<K>>>,
+{
+    stream.inspect_ok(move |event| {
+        store.apply_watcher_event(event)
+    })
+}
+```
+
+
+notes:
+- let's see reflectors. watcher with a store. store built up from intepreting watch results.
+- and that description can be translated into a single line body
+- complicated signature, you need a Store<K> (which i've not defined)
+- you need the unflattend stream that the watcher is outputting; that's W (normally you don't have to write that out)
+- pass along the stream, storing the outcome of every event
+
+---
+### kube-runtime: reflector usage
 
 ```rust
 let cms: Api<ConfigMap> = Api::namespaced(client, &namespace);
 
-let writer = reflector::store::Writer::<ConfigMap>::default();
+let writer = Writer::<ConfigMap>::default();
 let reader = writer.as_reader();
 let rf = reflector(writer, watcher(cms, lp));
+
+let mut w = try_flatten_applied(rf).boxed();
+while let Some(event) = w.try_next().await? {
+    info!("Applied {}", Meta::name(&event));
+}
 ```
 
 notes:
-- Builds on top of watcher and adds a store
-- Move ensures no use after construction. Writer disappears. No weird white text contracts in godoc. Enforce it in the code.
-- what is a reflector?
+- To use this you construct a writer, and a watcher. Then you use is as a watcher, like at the end
+- More importantly; You can get a reader from the writer, but you cannot copy the write.
+- Once you construct the reflector, writer disappears. Great thing about rust move semantics. This ends up being not being a weird white text contracts in go doc. Compile error to try to use writer from more than one place.
 
 ---
-### kube-runtime: reflector
+### kube-runtime: Controller
+
 ```rust
-pub fn reflector<K: Meta + Clone, W: Stream<Item = Result<watcher::Event<K>(mut store: store::Writer<K>, stream: W)
-    -> impl Stream<Item = W::Item>
-{
-    stream.inspect_ok(move |event| store.apply_watcher_event(event))
+async fn main() -> Result<(), kube::Error> {
+    let client = Client::try_default().await?;
+    let context = Context::new(SomeData::new());
+    let cmgs = Api::<ConfigMapGenerator>::all(client.clone());
+    let cms = Api::<ConfigMap>::all(client.clone());
+
+    Controller::new(cmgs, ListParams::default())
+        .owns(cms, ListParams::default())
+        .run(reconcile, error_policy, context)
+        .await;
+    Ok(())
 }
 ```
+
+notes:
+- Controller is a system that calls your reconciler with events as configured.
+- should remind you a bit of controller-runtime. heavily inspired (got help).
+- owns relation is there, can own arbitrarily many
+- not shown: (but hinted to earlier in talk) you derive your crd from a struct, and provide 2 fns
 
 ---
 ### kube-runtime: Controller (handlers)
@@ -755,31 +831,10 @@ fn error_policy(_error: &Error, ctx: Context<()>) -> ReconcilerAction {
 ```
 
 notes:
-- Controller is a system that calls your reconciler with events as configured.
-- You define 2 fns. One where you write idempotent (not going to talk about how to write resilient controllers, all normal advice (kbuilder etc) applies).
+
+- Reconcile; One where you write idempotent (not going to talk about how to write resilient controllers, all normal advice (kbuilder etc) applies).
 - Second one is an error handler. You might want to check every error dilligently within the reconciler, but you can also just use `?`.
 - if you have those, then it's just hooking up events and contexts:
-
----
-### kube-runtime: Controller (setup)
-
-```rust
-async fn main() -> Result<(), kube::Error> {
-    let client = Client::try_default().await?;
-    let context = Context::new(SomeData::new());
-    let cmgs = Api::<ConfigMapGenerator>::all(client.clone());
-    let cms = Api::<ConfigMap>::all(client.clone());
-
-    Controller::new(cmgs, ListParams::default())
-        .owns(cms, ListParams::default())
-        .run(reconcile, error_policy, context)
-        .await;
-    Ok(())
-}
-```
-
-notes:
-- should remind you a bit of controller-runtime. heavily inspired (got help).
 
 ---
 ### Building Controllers
@@ -822,8 +877,3 @@ Rough edges. Api library (kube) quite stable, but kube-runtime is pretty new sti
 
 Vision: light weight, easy to understand. Not much indirection. No crazy scaffolding. And type safety.
 Rust ideal for this, but we are in early stages.
-
----
-### TODO:
-bryan liles barcelona: all languages should work amazingly
-keynote 6months later in san diego: rust is weird
