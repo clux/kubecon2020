@@ -792,6 +792,7 @@ notes:
 ### kube-runtime: Controller
 
 ```rust
+#[tokio::main]
 async fn main() -> Result<(), kube::Error> {
     let client = Client::try_default().await?;
     let context = Context::new(SomeData::new());
@@ -810,7 +811,8 @@ notes:
 - Controller is a system that calls your reconciler with events as configured.
 - should remind you a bit of controller-runtime. heavily inspired (got help).
 - owns relation is there, can own arbitrarily many
-- not shown: (but hinted to earlier in talk) you derive your crd from a struct, and provide 2 fns
+- completely sufficient main; CMG ensuring CM is in correct state
+- missing: you derive your CR from a struct (shown), and provide 2 fns, that will be called with a context you can define
 
 ---
 ### kube-runtime: Controller (handlers)
@@ -831,10 +833,8 @@ fn error_policy(_error: &Error, ctx: Context<()>) -> ReconcilerAction {
 ```
 
 notes:
-
-- Reconcile; One where you write idempotent (not going to talk about how to write resilient controllers, all normal advice (kbuilder etc) applies).
-- Second one is an error handler. You might want to check every error dilligently within the reconciler, but you can also just use `?`.
-- if you have those, then it's just hooking up events and contexts:
+- Reconcile; One where you write your idempotent, and resilient reconciliation loop (we have examples, but no time, normal guidelines apply).
+- Second one is an error handler. So you can use `?` and have a default error policy if anything unexpected goes wrong.
 
 ---
 ### Building Controllers
