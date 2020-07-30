@@ -688,7 +688,7 @@ notes:
 ### kube-runtime
 
 <ul>
-  <li class="fragment">Teo K. Röijezon / <a href="https://github.com/teozkr/">@teozkr</a></li>
+  <li class="fragment">Teo K. Röijezon - <a href="https://github.com/teozkr/">teozkr</a></li>
   <li class="fragment">Entirely Stream based solution</li>
   <li class="fragment">watcher</li>
   <li class="fragment">reflector with Store</li>
@@ -698,7 +698,7 @@ notes:
 notes:
 - So a huge shoutout to my other maintainer: Teo.
 - He basically figured out an entirely Stream based solution for (not only) watchers, but also reflectors and controllers
-- and because these objects are just this rust native concept of a stream, they end up being possible to manipulate them in very standard ways; store, pass around, extend, integrate, instrument, test
+- and because these objects are just this rust native concept of a stream, they end up being possible to manipulate in very standard ways; store, pass around, extend, integrate, instrument, test
 - we've not gotten around to showcase, nor poc all of that, and this definitely has rough edges, but it's definitely the best evolution point so far for a controller-runtime in rust
 - so will quickly go through how they work
 
@@ -746,7 +746,6 @@ notes:
 - suppose i only want to subscribe to Added or Modified ew for ConfigMaps, in some namespace, this is how that would look. that could basically be your main.
 - line 4; watcher on configmaps, flatten and filter to applied events
 - handles all the watch complexity
-- and coz watcher exposes full state transition -> can build reflector easily
 
 ---
 ### kube-runtime: reflector
@@ -796,6 +795,7 @@ notes:
 - What is not clonable; the writer. Because it's unsound to have multiple things writing to the same store. So that has to be illegal.
 - By illegal; Don't mean we force this condition on an unknowning user at the last line of your (go) doc.
 - I mean; it's actually a compile error to try to use the writer after making the reflector. Thanks to move semantics.
+- Move on to the big one. Controller
 
 ---
 ### kube-runtime: Controller
@@ -817,8 +817,9 @@ async fn main() -> Result<(), kube::Error> {
 ```
 
 notes:
-- Controller is a system reconciles a CRD and objects it owns - calls a reconcile fn when anything related changes.
-- should remind you a bit of controller-runtime. heavily inspired (got help).
+- C is a system reconciles an object/CR along with child objects it owns - calls a reconcile fn when anything related changes.
+- That's it's job, combining input streams, debouncing events, scheduling retries.
+- builder pattern: should remind you a bit of controller-runtime. heavily inspired (got help).
 - ex: CMG ensuring CM is in correct state
 - completely sufficient main
 - not shown: you derive your CR from a struct (shown), and provide error handling policy, plus a reconciler fn, that will be called with a context you can define
@@ -857,32 +858,30 @@ notes:
 - use finalizers to gc. If you control an object, put an ownerreference on it.
 
 ---
-### Examples ?
+### Examples
 
-- controller-rs
-Web Frameworks?
-
-- actix
-- warp
-- rocket
-
-Metrics libraries, logging libraries, tracing libraries,
-
-- prometheus
-- tracing (#[instrument] -> spans! (part of tokio))
-- (tracing has log exporters, so just start with tracing, want jaeger anyway)
-- sentry
+<ul>
+    <li class="fragment"><a href="https://github.com/clux/controller-rs">controller-rs</a> and <a href="https://github.com/clux/version-rs">version-rs</a></li>
+    <li class="fragment">Bring your own deps</li>
+    <li class="fragment">web: <a href="https://crates.io/crates/actix-web">actix-web</a>, <a href="https://crates.io/crates/warp">warp</a>, <a href="https://crates.io/crates/rocket">rocket</a></li>
+    <li class="fragment">o11y: <a href="https://crates.io/crates/tracing">tracing</a>, <a href="https://crates.io/crates/sentry">sentry</a>, <a href="https://crates.io/crates/prometheus">prometheus</a></li>
+</ul>
 
 notes:
+- basic setup for how things work
 - No scaffolding here. Choose your own dependencies.
-- Frameworks? You probably want one, if only to expose metrics.
-- ultimately, not going to dictate anything and put it inside an opinionated framework.
-
-link to controller-rs and version-rs.
+- Frameworks? Maybe you want one, good practice to expose metrics.
+- o11y: tracing eco really solid - slap on a #[instrument] proc macro, and add your favourite tracing subscriber
+- sentry for error reporting, or prometheus for custom metrics
 
 ---
-### Caveats
-Rough edges. Api library (kube) quite stable, but kube-runtime is pretty new still. Show users and testimonials. Kruslet.
+### End
 
-Vision: light weight, easy to understand. Not much indirection. No crazy scaffolding. And type safety.
-Rust ideal for this, but we are in early stages.
+- Eirik Albrigtsen
+- [clux](https://github.com/clux) / [@sszynrae](https://twitter.com/sszynrae)
+- [kube-rs](https://github.com/clux/kube-rs)
+
+notes:
+- that's it.
+- We're doing this because we want something: light weight, easy to understand. Not much indirection. No crazy scaffolding. And type safety.
+- Api crate (kube) quite stable, but kube-runtime is pretty new still, so anyone that's willing to get their hands dirty, help is appreciated.
