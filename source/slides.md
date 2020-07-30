@@ -677,6 +677,7 @@ notes:
 <ul class="fragment">
   <li>LIST</li>
   <li>stream</li>
+  <li>track resource versions</li>
   <li>handle stream errors behind the scenes</li>
   <li>maybe RE-LIST (duplicate + dropped events)</li>
   <li>propagate user errors</li>
@@ -685,7 +686,7 @@ notes:
 
 notes:
 - what would such an abstraction do?
-- Well we got to watch continously, but not longer than 5 minutes, propagate all user errors, re-list on desync errors, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
+- Well we got to list then watch continously, but not longer than 5 minutes, propagate all user errors, re-list on desync errors, keep track of resource versions, and still somehow encapsulate it all in one nice stream. It's absolutely not trivial.
 
 ---
 ### kube-runtime
