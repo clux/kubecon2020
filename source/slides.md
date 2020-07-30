@@ -18,6 +18,7 @@
 - Eirik Albrigtsen
 - [clux](https://github.com/clux) / [@sszynrae](https://twitter.com/sszynrae)
 - [kube-rs](https://github.com/clux/kube-rs)
+- slides at http://clux.github.io/kubecon2020
 
 notes:
 - eirik/clux - one of the main maintainers on kube-rs.
@@ -700,7 +701,7 @@ notes:
 - He basically figured out an entirely Stream based solution for (not only) watchers, but also reflectors and controllers
 - and because these objects are just this rust native concept of a stream, they end up being possible to manipulate in very standard ways; store, pass around, extend, integrate, instrument, test
 - we've not gotten around to showcase, nor poc all of that, and this definitely has rough edges, but it's definitely the best evolution point so far for a controller-runtime in rust
-- so will quickly go through how they work
+- we'll cover the basics of how they work, but it's going to go quickly. watchers first.
 
 ---
 ### kube-runtime: watcher
@@ -880,8 +881,10 @@ notes:
 - Eirik Albrigtsen
 - [clux](https://github.com/clux) / [@sszynrae](https://twitter.com/sszynrae)
 - [kube-rs](https://github.com/clux/kube-rs)
+- slides at http://clux.github.io/kubecon2020
 
 notes:
-- that's it.
-- We're doing this because we want something: light weight, easy to understand. Not much indirection. No crazy scaffolding. And type safety.
+- that's it. been talking for some time. hope it's been useful. source in link, slides there
 - Api crate (kube) quite stable, but kube-runtime is pretty new still, so anyone that's willing to get their hands dirty, help is appreciated.
+- Changes are documented in our CHANGELOG - so check that if using it + pin version.
+- SKIP: We're doing this because we want something: light weight, easy to understand. Not much indirection. Defo No scaffolding.
