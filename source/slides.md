@@ -29,7 +29,7 @@ notes:
 
 - Finding invarints in Go codebase
 - Use Rust Generics to model the API <!-- .element: class="fragment" -->
-- Controller<K> <!-- .element: class="fragment" -->
+- Rust Controllers <!-- .element: class="fragment" -->
 
 notes:
 - We'll identify some of these invariants while covering parts the kubernetes codebase.
@@ -249,13 +249,16 @@ notes:
 - [specialized informers](https://github.com/kubernetes/client-go/blob/master/informers/apps/v1/statefulset.go#L58-L78)
 - more than 100K lines of code  <!-- .element: class="fragment" -->
 
+<small class="fragment">Bryan Liles: <a href="https://youtu.be/Rbe0eNXqCoA?t=566">client-go is not for mortals</a></small>
+
 notes:
 - much code
 - client api, also informers for every object, client setup per group
 - NEXT: as a result; client-go > 100K LOC (without vendoring)
 - and i'm not at all passing judgement at this. this is great.
 the fact that everything looks the same in here, is what enables `kubectl` to provide such a consistent interface, even if the language makes it hard for you to do so.
-- moving on to documented concepts
+- still, definitely not outside the scope of criticism; letting someone else do it and point you to a kubecon keynote from barcelona
+- in the mean time; moving on to documented api concepts
 
 ---
 ### kubernetes.io: api endpoints
@@ -350,15 +353,12 @@ notes:
     <li class="fragment">Arnav Singh / @Arnavion - <a href="https://github.com/Arnavion/k8s-openapi">k8s-openapi</a></li>
 </ul>
 
-<small class="fragment">Bryan Liles: <a href="https://youtu.be/Rbe0eNXqCoA?t=566">client-go is not for mortals</a></small>
-
 notes:
 - like the go code, will be slightly simplifying for readability, and most of the stuff here is kube-rs
 - but start out with code in a project by Arnav Singh aka Arnavion
 - the project really is the lynchpin that makes any generics possible
 - generates rust structures from openapi schemas, plus factoring out some of "the consistency" into a few traits that is then implemented for these structures
 - so huge shoutout to him. for what i believe is just his side project, i really cannot thank him enough
-- motivation a bit out of need - but also partly out of the call to action by bryan liles at kubecon barcelona
 
 ---
 ### k8s-openapi: Resource Trait
