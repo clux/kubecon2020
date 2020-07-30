@@ -29,12 +29,12 @@ notes:
 
 - Finding invarints in Go codebase
 - Use Rust Generics to model the API <!-- .element: class="fragment" -->
-- Async Rust <!-- .element: class="fragment" -->
+- Controller<K> <!-- .element: class="fragment" -->
 
 notes:
 - We'll identify some of these invariants while covering parts the kubernetes codebase.
 - Then talk about how to model the same api in rust using generics, and see that it gives us the same consistency more-or-less for free.
-- We'll also touch on async api design in rust during this modelling process. Since async rust was only properly released about a year ago, so if you're not familiar, you'll at least see some of the now more established patterns.
+- We'll also talk about abstractions on top of this rust Api, that ultimately lets you write light weight controllers
 
 
 <!--Still, it's not a magic bullet. Kubernetes is written in Go; Any broken invariants on the Go side would still need to be respected in rust land.
@@ -794,12 +794,12 @@ while let Some(event) = w.try_next().await? {
 ```
 
 notes:
-- To use this you construct a writer, and a watcher. Then you use is as a watcher, like at the end
-- More importantly; 3 lines center; You can get a reader from the writer, and use that as state in a like a web framework. Can be cloned.
-- What is not clonable; the writer. Because it's unsound to have multiple things writing to the same store. So that has to be illegal.
-- By illegal; Don't mean illegal by documentation convention.
-- I mean; making error it compile error to try to use the writer after making the reflector. This works, and relies just on rust move semantics => can only have one writer.
-- Move on to the big one. Controller
+- To use it, you make a writer and a watcher, combine them. Then you use the reflector just as a watcher at the end.
+- More importantly; 3 lines center; You can create a reader from the writer, and use that as state in a like a web framework. Can be cloned.
+- What is not clonable; the writer. Because it's unsound to have multiple writers for a Store. So that's illegal.
+- By illegal; not a documentation convention.
+- but actually, a compile error. Rust's move semantics makes the writer effectively disappear into the reflector, and because it's not clonable, you're done. You can only have one writer. One of those things I really like about the language.
+- Move on to the finale here; the Controller.
 
 ---
 ### kube-runtime: Controller
@@ -822,11 +822,11 @@ async fn main() -> Result<(), kube::Error> {
 
 notes:
 - C is a system reconciles an object/CR along with child objects it owns - calls a reconcile fn when anything related changes.
-- That's it's job, combining input streams, debouncing events, scheduling retries.
+- That's the C's job; combining input streams, debouncing events, scheduling retries.
 - builder pattern: should remind you a bit of controller-runtime. heavily inspired (got help).
-- ex: CMG ensuring CM is in correct state
 - completely sufficient main
-- not shown: you derive your CR from a struct (shown), and provide error handling policy, plus a reconciler fn, that will be called with a context you can define
+- ex: Make a C for CMG that tries to ensure CM is in correct state. CMG == CR.
+- showed how to derive your CR from a struct earlier, so the only few remaining bits are to provide: an error handling policy, and a reconciler fn, that will be called with a context you can define
 
 ---
 ### kube-runtime: Controller reconciler
@@ -844,7 +844,7 @@ async fn reconcile(cmg: ConfigMapGenerator, ctx: Context<()>)
 ```
 
 notes:
-- How reconcile looks. If you need access to anything here you can stuff it into your context.
+- How reconcile looks. Async fn that needs to return a ReconcilerAction if it succeeds.
 - In the interest of not obscuring the slide; this fn is where you would grab a client from the Context, and start making api calls to k8s to ensure CM is up to date with GEN. Write to status object to indicate how far you got.
 
 ---
@@ -856,10 +856,11 @@ notes:
 - use finalizers <!-- .element: class="fragment" -->
 
 notes:
-- seems handwavey, but not going to rehash best practices for writing controllers here
+- seems handwavey, "how do you build controllers? just build controllers"
+- but not going to rehash best practices for writing controllers here
 - most advice from kubebuilder / controller-runtime generally applies (talks)
-- TL;DR: reconcile needs to be idempotent, check state of the world before you redo all the work on a duplicate event. use server side apply.
-- use finalizers to gc. If you control an object, put an ownerreference on it.
+- TL;DR: reconcile needs to be idempotent, be able to resume if it fails, deal with duplicate events in sane way, use server side apply.
+- use finalizers to gc. (cant rely on removed) If you control an object, put an ownerreference on it.
 
 ---
 ### Examples
@@ -872,11 +873,12 @@ notes:
 </ul>
 
 notes:
-- basic setup for how things work
+- want complete examples: two repos; controller-rs (controller inside actix, with tracing, custom metrics), version-rs (light weight; deployment reflector exposed through actix - single file 100 lines)
 - No scaffolding here. Choose your own dependencies.
-- Frameworks? Maybe you want one, good practice to expose metrics.
+- need a web framework? Reasonable. It's at least good practice to expose metrics, so at the very least a simple web server is helpful
 - o11y: tracing eco really solid - slap on a #[instrument] proc macro, and add your favourite tracing subscriber
 - sentry for error reporting, or prometheus for custom metrics
+- highly recommend all these. but beyond that...
 
 ---
 ### End
@@ -887,7 +889,7 @@ notes:
 - slides at http://clux.github.io/kubecon2020
 
 notes:
-- that's it. been talking for some time. hope it's been useful. source in link, slides there
+- that's it. been talking for some time. hope it's been useful. source in link, all on crates.io, slides available at this link
 - Api crate (kube) quite stable, but kube-runtime is pretty new still, so anyone that's willing to get their hands dirty, help is appreciated.
 - Changes are documented in our CHANGELOG - so check that if using it + pin version.
 - SKIP: We're doing this because we want something: light weight, easy to understand. Not much indirection. Defo No scaffolding.
