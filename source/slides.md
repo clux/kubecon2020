@@ -658,6 +658,7 @@ notes:
 <ul>
 <li class="fragment">resourceVersion bookkeeping</li>
 <li class="fragment">stale resourceVersions <a href="https://github.com/kubernetes/kubernetes/issues/87292">#87292</a></li>
+<li class="fragment">Removed events are near useless</li>
 <li class="fragment">5 minute max limit <a href="https://github.com/kubernetes/kubernetes/issues/6513">#6513</a></li>
 <li class="fragment">large data use <a href="https://github.com/kubernetes/kubernetes/issues/90339">#90339</a>, <a href="https://github.com/kubernetes/kubernetes/issues/82655">#82655</a></li>
 </ul>
@@ -665,6 +666,7 @@ notes:
 notes:
 - Gotta Track ResourceVersions; integers passed on via etcd, must pass these on for every watch call, to tell k8s where you left off.
 - Sometimes these RVs are stale, and if you are building a state cache like a reflector, you have to re-list and get all the state back for every object in the system if you get desynchronized. Before bookmarks, that was very likely to happen.
+- Partly a consequence; If you are relying on Removed events, well, that's now purely best effort. What happens if your app crashed? Or you get desynched in between? That ev lost. At least init from zero rv gives you a new event for existing items. But for deleted items? You'll never get that event again.
 - Watch calls also can't reliably stay open for more than 5 minutes, so you have to keep issuing this watch call at least that frequently.
 - and finally, sheer data use of it. On EVERY CHANGE incl status. Seen NodeStatus, last updated timestamps inside conditions? Every few seconds, you'll get the whole heckin' object. (Can hide, but still networked)
 - => anyone building a controller type solution will need abstractions.
@@ -727,8 +729,8 @@ watcher(api, listparams)
 
 notes:
 - Funnily enough, watchers end up being one of the more complicated of the three. Entirely due to watch corner cases.
-- Internally, we model it with FSM. And we are using basically a state transformer to pass around the STATE (shown above), along with the actual watch events (ultimate thing we want to return)
-- But because one of these could be a list step, a watcher::Event could be a whole collection - so we expose helpers that flatten this into a regular watchevent stream
+- Internally, we model it with FSM. And we are using basically a state transformer to pass around the STATE (shown above), along with the actual watch events (ultimate thing we want to return).
+- Sometimes the watcher will give you a whole chunk of items, that happens during a relist. Generally, you want to work with a flattened version of that stream, we currently have some helpers for that.
 
 ---
 ### kube-runtime: watcher usage
@@ -747,6 +749,7 @@ notes:
 - suppose i only want to subscribe to Added or Modified ew for ConfigMaps, in some namespace, this is how that would look. that could basically be your main.
 - line 4; watcher on configmaps, flatten and filter to applied events
 - handles all the watch complexity
+- and the fact that there's an unflattened stream you can ultimately work with, means that a state store will always have some data, even during a relist
 
 ---
 ### kube-runtime: reflector
@@ -767,11 +770,11 @@ where
 
 
 notes:
-- reflector is a watcher that stores the result of events in a store.
-- and that description can be translated into a single line body
-- observe a watcher stream, and you inserting/replacing/removing objects from store, then pass on the events unmodified
-- complicated signature, you need a Store<K> (which i've not defined, but hashmap aware of watchevents)
+- a reflector builds on top of a watcher, by recording objects in a store as events pass through
+- i.e. when watchevents happen we insert/replace/remove objects from store, then pass on the events unmodified
+- complicated signature, you need a Store<K> (which i've not defined, but hashmap of objects)
 - you need the unflattend stream that the watcher is outputting; that's W
+- but ultimately, a one line body on top of watcher. cool conceptually.
 
 
 ---
@@ -794,8 +797,8 @@ notes:
 - To use this you construct a writer, and a watcher. Then you use is as a watcher, like at the end
 - More importantly; 3 lines center; You can get a reader from the writer, and use that as state in a like a web framework. Can be cloned.
 - What is not clonable; the writer. Because it's unsound to have multiple things writing to the same store. So that has to be illegal.
-- By illegal; Don't mean we force this condition on an unknowning user at the last line of your (go) doc.
-- I mean; it's actually a compile error to try to use the writer after making the reflector. Thanks to move semantics.
+- By illegal; Don't mean illegal by documentation convention.
+- I mean; making error it compile error to try to use the writer after making the reflector. This works, and relies just on rust move semantics => can only have one writer.
 - Move on to the big one. Controller
 
 ---
