@@ -119,28 +119,6 @@ notes:
 - More importantly; look at items there; a dynamic collection so this struct can be re-used.
 
 ---
-#### types.go: APIResource
-[types.go#L998-L1032](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L998-L1032)
-
-```go
-type APIResource struct {
-    Name string
-    SingularName string
-    Namespaced bool
-    Group string
-    Version string
-    Kind string
-    Verbs Verbs
-    ShortNames []string
-    Categories []string
-    StorageVersionHash string
-}
-```
-
-notes:
-- standardising where we we can get information of what Kind
-
----
 #### types.go: ListOptions
 [types.go#L328-L412](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L328-L412)
 
@@ -166,6 +144,27 @@ notes:
 - LabelSelectors sitting inside ListOptions, so there's a generic way of filtering
 
 ---
+#### types.go: APIResource
+[types.go#L998-L1032](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L998-L1032)
+
+```go
+type APIResource struct {
+    Name string
+    SingularName string
+    Namespaced bool
+    Group string
+    Version string
+    Kind string
+    Verbs Verbs
+    ShortNames []string
+    Categories []string
+    StorageVersionHash string
+}
+```
+notes:
+- also a type for standardising all meta-information about a resource
+
+---
 #### Types.go
 
 - 339 lines of code
@@ -174,7 +173,7 @@ notes:
 notes:
 - all this in 300 lines of code
 - So I am raving this about this, but it's because of the consistency and complete adoption of everything in this file; that kubernetes feels so consistent and why we can actually make generic assumptions in other languages.
-- now, writing structs is one thing, but how do we ensure these are consistent reused? lets look at client-go for a size contrast.
+- now, writing structs is one thing, but how do we ensure these are consistent reused? lets look at client-go for a bit of contrast.
 
 ---
 #### client-go: Deployment
