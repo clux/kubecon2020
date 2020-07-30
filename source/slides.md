@@ -27,7 +27,7 @@ notes:
 ---
 ### Hidden Generics in Kubernetes' API
 
-- Finding invarints in Go codebase
+- Finding invariants in Go codebase
 - Use Rust Generics to model the API <!-- .element: class="fragment" -->
 - Rust Controllers <!-- .element: class="fragment" -->
 
