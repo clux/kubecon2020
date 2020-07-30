@@ -719,10 +719,15 @@ enum State<K: Meta + Clone> {
 }
 ```
 
+```rust
+watcher(api, listparams)
+    -> impl Stream<Item = Result<watcher::Event<K>>>
+```
+
 notes:
 - Funnily enough, watchers end up being one of the more complicated of the three. Entirely due to watch corner cases.
-- Informer-like. But FSM. Not only passing watch events (ultimate purpose), but also moving around the state as it changes (represented here).
-- Now this is all just using move semantics in rust so it ends up being efficient, but you gotta actually try to flatten the stream to get what you need.
+- Internally, we model it with FSM. And we are using basically a state transformer to pass around the STATE (shown above), along with the actual watch events (ultimate thing we want to return)
+- But because one of these could be a list step, a watcher::Event could be a whole collection - so we expose helpers that flatten this into a regular watchevent stream
 
 ---
 ### kube-runtime: watcher usage
@@ -741,6 +746,7 @@ notes:
 - suppose i only want to subscribe to Added or Modified ew for ConfigMaps, in some namespace, this is how that would look. that could basically be your main.
 - line 4; watcher on configmaps, flatten and filter to applied events
 - handles all the watch complexity
+- and coz watcher exposes full state transition -> can build reflector easily
 
 ---
 ### kube-runtime: reflector
@@ -761,11 +767,12 @@ where
 
 
 notes:
-- let's see reflectors. watcher with a store. store built up from intepreting watch results.
+- reflector is a watcher that stores the result of events in a store.
 - and that description can be translated into a single line body
-- complicated signature, you need a Store<K> (which i've not defined)
-- you need the unflattend stream that the watcher is outputting; that's W (normally you don't have to write that out)
-- pass along the stream, storing the outcome of every event
+- observe a watcher stream, and you inserting/replacing/removing objects from store, then pass on the events unmodified
+- complicated signature, you need a Store<K> (which i've not defined, but hashmap aware of watchevents)
+- you need the unflattend stream that the watcher is outputting; that's W
+
 
 ---
 ### kube-runtime: reflector usage
@@ -785,8 +792,10 @@ while let Some(event) = w.try_next().await? {
 
 notes:
 - To use this you construct a writer, and a watcher. Then you use is as a watcher, like at the end
-- More importantly; You can get a reader from the writer, but you cannot copy the write.
-- Once you construct the reflector, writer disappears. Great thing about rust move semantics. This ends up being not being a weird white text contracts in go doc. Compile error to try to use writer from more than one place.
+- More importantly; 3 lines center; You can get a reader from the writer, and use that as state in a like a web framework. Can be cloned.
+- What is not clonable; the writer. Because it's unsound to have multiple things writing to the same store. So that has to be illegal.
+- By illegal; Don't mean we force this condition on an unknowning user at the last line of your (go) doc.
+- I mean; it's actually a compile error to try to use the writer after making the reflector. Thanks to move semantics.
 
 ---
 ### kube-runtime: Controller
@@ -795,7 +804,7 @@ notes:
 #[tokio::main]
 async fn main() -> Result<(), kube::Error> {
     let client = Client::try_default().await?;
-    let context = Context::new(SomeData::new());
+    let context = Context::new(());
     let cmgs = Api::<ConfigMapGenerator>::all(client.clone());
     let cms = Api::<ConfigMap>::all(client.clone());
 
@@ -808,49 +817,49 @@ async fn main() -> Result<(), kube::Error> {
 ```
 
 notes:
-- Controller is a system that calls your reconciler with events as configured.
+- Controller is a system reconciles a CRD and objects it owns - calls a reconcile fn when anything related changes.
 - should remind you a bit of controller-runtime. heavily inspired (got help).
-- owns relation is there, can own arbitrarily many
-- completely sufficient main; CMG ensuring CM is in correct state
-- missing: you derive your CR from a struct (shown), and provide 2 fns, that will be called with a context you can define
+- ex: CMG ensuring CM is in correct state
+- completely sufficient main
+- not shown: you derive your CR from a struct (shown), and provide error handling policy, plus a reconciler fn, that will be called with a context you can define
 
 ---
-### kube-runtime: Controller (handlers)
+### kube-runtime: Controller reconciler
 
 ```rust
-async fn reconcile(g: ConfigMapGenerator, ctx: Context<()>) -> Result<ReconcilerAction, Error> {
-    // TODO: reconcile
+async fn reconcile(cmg: ConfigMapGenerator, ctx: Context<()>)
+        -> Result<ReconcilerAction, Error>
+{
+    // TODO: update CM to match cmg.content
+    // TODO: update CMG.status
     Ok(ReconcilerAction {
         requeue_after: Some(Duration::from_secs(300)),
     })
 }
-fn error_policy(_error: &Error, ctx: Context<()>) -> ReconcilerAction {
-    // TODO: handle non-Oks from reconcile
-    ReconcilerAction {
-        requeue_after: Some(Duration::from_secs(60)),
-    }
-}
 ```
 
 notes:
-- Reconcile; One where you write your idempotent, and resilient reconciliation loop (we have examples, but no time, normal guidelines apply).
-- Second one is an error handler. So you can use `?` and have a default error policy if anything unexpected goes wrong.
+- How reconcile looks. If you need access to anything here you can stuff it into your context.
+- In the interest of not obscuring the slide; this fn is where you would grab a client from the Context, and start making api calls to k8s to ensure CM is up to date with GEN. Write to status object to indicate how far you got.
 
 ---
 ### Building Controllers
 
-- follow controller-runtime / kubebuilder best practices
-- idempotent, error resilient reconcilers
-- use server side apply
-- use finalizers
+- controller-runtime advice applies <!-- .element: class="fragment" -->
+- idempotent, error resilient reconcilers <!-- .element: class="fragment" -->
+- use server side apply <!-- .element: class="fragment" -->
+- use finalizers <!-- .element: class="fragment" -->
 
 notes:
-- not rehashing best practices. most advice from kubebuilder / controller-runtime applies.
-- reconcile needs to be idempotent, check state of the world before you redo all the work on a duplicate event. use server side apply. use finalizers to gc.
+- seems handwavey, but not going to rehash best practices for writing controllers here
+- most advice from kubebuilder / controller-runtime generally applies (talks)
+- TL;DR: reconcile needs to be idempotent, check state of the world before you redo all the work on a duplicate event. use server side apply.
+- use finalizers to gc. If you control an object, put an ownerreference on it.
 
 ---
-### Examples
+### Examples ?
 
+- controller-rs
 Web Frameworks?
 
 - actix
