@@ -22,7 +22,7 @@
 
 notes:
 - eirik/clux - one of the main maintainers on kube-rs.
-- talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, but for the lack of actual generics in the language, _these invariants are generally enforced through consistency and code-generation steps.
+- talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, look at how these are put in place, how enforced, and how reliable are
 
 ---
 ### Hidden Generics in Kubernetes' API
@@ -32,9 +32,9 @@ notes:
 - Rust Controllers <!-- .element: class="fragment" -->
 
 notes:
-- We'll identify some of these invariants while covering parts the kubernetes codebase.
-- Then talk about how to model the same api in rust using generics, and see that it gives us the same consistency more-or-less for free.
-- We'll also talk about abstractions on top of this rust Api, that ultimately lets you write light weight controllers
+- We'll identify some of these invariants first while covering parts the kubernetes codebase.
+- Then talk about how to model the kuberenets api in rust using generics, and see that it gives us the same consistency with a lot less work.
+- We'll also talk about abstractions on top of this rust Api, that ultimately lets you write light weight generic controllers
 
 
 <!--Still, it's not a magic bullet. Kubernetes is written in Go; Any broken invariants on the Go side would still need to be respected in rust land.
@@ -887,9 +887,12 @@ notes:
 - [clux](https://github.com/clux) / [@sszynrae](https://twitter.com/sszynrae)
 - [kube-rs](https://github.com/clux/kube-rs)
 - slides at http://clux.github.io/kubecon2020
+- [babylonhealth](https://github.com/babylonhealth/)
 
 notes:
 - that's it. been talking for some time. hope it's been useful. source in link, all on crates.io, slides available at this link
 - Api crate (kube) quite stable, but kube-runtime is pretty new still, so anyone that's willing to get their hands dirty, help is appreciated.
 - Changes are documented in our CHANGELOG - so check that if using it + pin version.
-- SKIP: We're doing this because we want something: light weight, easy to understand. Not much indirection. Defo No scaffolding.
+- Oh, plug, for babylonhealth. Who I work for. They do great things with kubernetes in the healthcare space. They're also very reasonable in their commitment to open source, and in particular been very encouraging w.r.t. this talk. So a big thank you to those guys as well.
+
+<!--- SKIP: We're doing this because we want something: light weight, easy to understand. Not much indirection. Defo No scaffolding.-->
