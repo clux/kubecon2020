@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+
+    <title>reveal-md</title>
+    <meta property="og:title" content="reveal-md" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://clux.github.io/kubecon-talk2020//featured-slide.jpg" />
+    <meta property="og:url" content="https://clux.github.io/kubecon-talk2020/" />
+    <link rel="stylesheet" href="./dist/reveal.css" />
+    <link rel="stylesheet" href="./dist/theme/moon.css" id="theme" />
+    <link rel="stylesheet" href="./css/highlight/zenburn.css" />
+
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides"><section  data-markdown><script type="text/template">### Hidden Generics in Kubernetes' API
+<style type="text/css">
+  .reveal h3, .reveal p, .reveal h4 {
+    text-transform: none;
+    text-align: left;
+  }
+  .reveal ul {
+    display: block;
+  }
+  .reveal ol {
+    display: block;
+  }
+  .reveal {
+    background: #353535 !important;
+  }
+</style>
+
+- Eirik Albrigtsen
+- [clux](https://github.com/clux) / [@sszynrae](https://twitter.com/sszynrae)
+- [kube-rs](https://github.com/clux/kube-rs)
+- slides at http://clux.github.io/kubecon2020
+
+<aside class="notes"><ul>
+<li>eirik - one of the main maintainers on kube-rs.</li>
+<li>before we start off; here&#39;s a bunch a bunch of links, me, sources, slides</li>
+<li>go by clux on github, or that on twitter</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### Hidden Generics in Kubernetes' API
+
+- Finding invariants in Go codebase
+- Use Rust Generics to model the API <!-- .element: class="fragment" -->
+- Rust Controllers <!-- .element: class="fragment" -->
+
+<aside class="notes"><ul>
+<li>talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, look at how these are put in place, how enforced, and how reliable are</li>
+<li>Then talk about how to model the kuberenets api in rust using generics, and see that it gives us the same consistency with a lot less work.</li>
+<li>We&#39;ll also talk about abstractions on top of this rust Api, that ultimately lets you write light weight, and generic controllers</li>
+</ul>
+<!--Still, it's not a magic bullet. Kubernetes is written in Go; Any broken invariants on the Go side would still need to be respected in rust land.
+Yes, there are some broken invariants, but kubernetes is still remarkably consistent in its api despite shortcomings of the language. And we'll show some good examples as we go along.-->
+
+<!--OTE: i'll try to use "WE" and "OUR" for the needs of kube-rs)--></aside></script></section><section  data-markdown><script type="text/template">### Kubernetes Invariants
+
+- [apimachinery/meta/v1/types.go](https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.g)
+- [client-go/kubernetes/typed](https://github.com/kubernetes/client-go/tree/master/kubernetes/typed)
+- [kubernetes.io/docs/concepts](https://kubernetes.io/docs/concepts/)
+
+<aside class="notes"><ul>
+<li>Let&#39;s talk about what kubernetes actually provides.</li>
+<li>these are our sources</li>
+<li>start by diving into the arguably most important file of all</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">#### types.go: TypeMeta
+
+[types.go#L36-56](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L36-L56)
+
+```go
+type TypeMeta struct {
+    // +optional
+    Kind string `json:"kind,omitempty" protobuf:"bytes,1,opt,name=kind"`
+    // +optional
+    APIVersion string `json:"apiVersion,omitempty" protobuf:"bytes,2,opt,name=apiVersion"`
+}
+```
+
+<aside class="notes"><ul>
+<li>This file really has everything you associate with a k8s object.</li>
+<li>Every object has kind + version - flattened into the root structure</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">#### types.go: ObjectMeta
+[types.go#L108-L282](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L108-L282)
+
+<!--
+    GenerateName string
+    // read only
+    UID types.UID
+    ResourceVersion string
+    Generation int64
+    CreationTimestamp Time
+    DeletionTimestamp *Time
+    DeletionGracePeriodSeconds *int64
+-->
+```go
+type ObjectMeta struct {
+    Name string
+    Namespace string
+
+    Labels map[string]string
+    Annotations map[string]string
+    OwnerReferences []OwnerReference
+    Finalizers []string
+    ClusterName string
+    ManagedFields []ManagedFieldsEntry
+}
+```
+
+<aside class="notes"><ul>
+<li>Core metadata everyone thinks about. Simplified view, hidden read-only properties, annotations, everything is optional. Every object MUST have it, and must look like this.</li>
+<li>OwnerReferences, labels, annotations, finalizers, all great, managed fields (shrug) all that can go in there, and they&#39;re standardised.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">#### types.go: List
+[types.go#L913-L923](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L913-L923)
+
+```go
+type List struct {
+    TypeMeta `json:",inline"`
+    ListMeta `json:"metadata,omitempty"`
+    Items []runtime.RawExtension `json:"items"`
+}
+```
+
+<aside class="notes"><ul>
+<li>For when you ask for a collection of items (this contains <code>ListMeta</code> a much smaller variant that can contain continuation point and a remaining item count).</li>
+<li>More importantly; look at items there; a dynamic collection so this struct can be re-used.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">#### types.go: ListOptions
+[types.go#L328-L412](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L328-L412)
+
+```go
+type ListOptions struct {
+    TypeMeta
+    LabelSelector string
+    FieldSelector string
+    Watch bool
+    AllowWatchBookmarks bool
+    ResourceVersion string
+    ResourceVersionMatch ResourceVersionMatch
+    TimeoutSeconds *int64
+    Limit int64
+    Continue string
+}
+```
+
+<aside class="notes"><ul>
+<li>All API params: GetOptions, ListOptions, DeleteOptions, PatchOptions.</li>
+<li>All parameters that the API accepts encapsulated into common structs from this root file.</li>
+<li>Error responses.</li>
+<li>LabelSelectors sitting inside ListOptions, so there&#39;s a generic way of filtering</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">#### types.go: APIResource
+[types.go#L998-L1032](https://github.com/kubernetes/apimachinery/blob/945d4ebf362b3bbbc070e89371e69f9394737676/pkg/apis/meta/v1/types.go#L998-L1032)
+
+```go
+type APIResource struct {
+    Name string
+    SingularName string
+    Namespaced bool
+    Group string
+    Version string
+    Kind string
+    Verbs Verbs
+    ShortNames []string
+    Categories []string
+    StorageVersionHash string
+}
+```
+<aside class="notes"><ul>
+<li>also a type for standardising all meta-information about a resource, and people can use it</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">#### Types.go
+
+- 339 lines of code
+- 928 lines of comments
+
+<aside class="notes"><ul>
+<li>all this in 300 lines of code</li>
+<li>So I am raving this about this, but it&#39;s because of the consistency and complete adoption of everything in this file; that kubernetes feels so consistent and why we can actually make generic assumptions in other languages.</li>
+<li>now, writing structs is one thing, but how do we ensure these are consistent reused? lets look at client-go for a bit of contrast.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">#### client-go: Deployment
+[deployment.go#L41-L55](https://github.com/kubernetes/client-go/blob/36233866f1c7c0ad3bdac1fc466cb5de3746cfa2/kubernetes/typed/apps/v1/deployment.go#L41-L55)
+
+```go
+type DeploymentInterface interface {
+    Create(ctx context.Context, deployment *v1.Deployment, opts metav1.CreateOptions) (*v1.Deployment, error)
+    Update(ctx context.Context, deployment *v1.Deployment, opts metav1.UpdateOptions) (*v1.Deployment, error)
+    UpdateStatus(ctx context.Context, deployment *v1.Deployment, opts metav1.UpdateOptions) (*v1.Deployment, error)
+    Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
+    DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error
+    Get(ctx context.Context, name string, opts metav1.GetOptions) (*v1.Deployment, error)
+    List(ctx context.Context, opts metav1.ListOptions) (*v1.DeploymentList, error)
+    Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error)
+    Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.Deployment, err error)
+    GetScale(ctx context.Context, deploymentName string, options metav1.GetOptions) (*autoscalingv1.Scale, error)
+    UpdateScale(ctx context.Context, deploymentName string, scale *autoscalingv1.Scale, opts metav1.UpdateOptions) (*autoscalingv1.Scale, error)
+```
+
+<aside class="notes"><ul>
+<li>typed api methods in client go (just the interface)</li>
+<li>getters/updaters/patchers/replacers/listers/deleters/watchers</li>
+<li>200 line file for this object</li>
+<li>go to pod, show same except subresouce and object it acts on</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">#### client-go: Pod
+[pod.go#L39-L54](https://github.com/kubernetes/client-go/blob/36233866f1c7c0ad3bdac1fc466cb5de3746cfa2/kubernetes/typed/core/v1/pod.go#L39-L54)
+
+```go
+type PodInterface interface {
+    Create(ctx context.Context, pod *v1.Pod, opts metav1.CreateOptions) (*v1.Pod, error)
+    Update(ctx context.Context, pod *v1.Pod, opts metav1.UpdateOptions) (*v1.Pod, error)
+    UpdateStatus(ctx context.Context, pod *v1.Pod, opts metav1.UpdateOptions) (*v1.Pod, error)
+    Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
+    DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error
+    Get(ctx context.Context, name string, opts metav1.GetOptions) (*v1.Pod, error)
+    List(ctx context.Context, opts metav1.ListOptions) (*v1.PodList, error)
+    Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error)
+    Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.Pod, err error)
+    GetEphemeralContainers(ctx context.Context, podName string, options metav1.GetOptions) (*v1.EphemeralContainers, error)
+    UpdateEphemeralContainers(ctx context.Context, podName string, ephemeralContainers *v1.EphemeralContainers, opts metav1.UpdateOptions) (*v1.EphemeralContainers, error)
+```
+
+<aside class="notes"><ul>
+<li>same story for every object</li>
+<li>so.. there&#39;s a 200 line file for object</li>
+<li>Q: how could be this possibly be consistent? A: in the header</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">#### client-go: header
+[deployment.go#L17](https://github.com/kubernetes/client-go/blob/36233866f1c7c0ad3bdac1fc466cb5de3746cfa2/kubernetes/typed/apps/v1/deployment.go#L17)
+
+```go
+// Code generated by client-gen. DO NOT EDIT.
+
+package v1
+```
+
+<aside class="notes"><ul>
+<li>all of this is generated.</li>
+<li>and, it might seem obvious, you <strong>have</strong> to enforce some of these assumptions for them to stick, but it&#39;s still kind of crazy</li>
+<li>it&#39;s literally manual generics, with a bunch of glue to make it work.</li>
+<li>but it&#39;s consistent. for each, kind, the specific structs are specialized via external code generation, and the gen. source is present in repo</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">#### client-go
+
+- tons of generated code per object
+- [specialized client api](https://github.com/kubernetes/client-go/tree/master/kubernetes/typed)
+- [specialized informers](https://github.com/kubernetes/client-go/blob/master/informers/apps/v1/statefulset.go#L58-L78)
+- more than 100K lines of code  <!-- .element: class="fragment" -->
+
+<small class="fragment">Bryan Liles: <a href="https://youtu.be/Rbe0eNXqCoA?t=566">client-go is not for mortals</a></small>
+
+<aside class="notes"><ul>
+<li>much code</li>
+<li>client api, also informers for every object, client setup per group</li>
+<li>NEXT: as a result; client-go &gt; 100K LOC (without vendoring)</li>
+<li>and i&#39;m not really to pass judgement at this. this is great.
+the fact that everything looks the same in here, takes advantage of apimachinery consistenly, is what enables <code>kubectl</code> to provide such a consistent interface, even if the language makes it hard for you to do so.</li>
+<li>there&#39;s a 5 minute clip; this kubecon keynote from barcelona (which also matches some of my motivations for this)</li>
+<li>in the mean time; moving on to documented api concepts</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kubernetes.io: api endpoints
+
+[api-concepts#standard-api-terminology](https://kubernetes.io/docs/reference/using-api/api-concepts/#standard-api-terminology)
+
+**Cluster-scoped resources**
+```
+GET /apis/GROUP/VERSION/RESOURCETYPE
+GET /apis/GROUP/VERSION/RESOURCETYPE/NAME
+```
+**Namespace-scoped resources**
+```
+GET /apis/GROUP/VERSION/RESOURCETYPE
+GET /apis/GROUP/VERSION/namespaces/NAMESPACE/RESOURCETYPE
+GET /apis/GROUP/VERSION/namespaces/NAMESPACE/RESOURCETYPE/NAME
+```
+
+
+<aside class="notes"><ul>
+<li>url consistency lets us make easy mappings between types and urls</li>
+<li>though things start to break down a little bit</li>
+<li>because this does not hold for pods, nodes, namespaces, service, pvcs, secret, or any other type in the core/v1 list. They have a different url that starts with <code>api</code> rather than <code>apis</code> + group missing</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">#### Broken: empty api group
+
+```
+GET /api/v1/pods
+
+       !=
+
+GET /apis/core/v1/pods
+```
+
+
+<aside class="notes"><ul>
+<li>it&#39;s a relatively minor inconsistency, coz we can just special case the empty group or core, but it&#39;s still awkward.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kubernetes.io: watch events
+
+[api-concepts#efficient-detection-of-changes](https://kubernetes.io/docs/reference/using-api/api-concepts/#efficient-detection-of-changes)
+
+```json
+{ "type": "ADDED", "object": { \
+    "kind": "Pod",  "apiVersion": "v1", \
+    "metadata": {"resourceVersion": "10596", ...}, ...} }
+{ "type": "MODIFIED", "object": { \
+    "kind": "Pod", "apiVersion": "v1", \
+    "metadata": {"resourceVersion": "11020", ...}, ...} }
+```
+
+<aside class="notes"><ul>
+<li>WatchEvs are what you receiv when you perform a watch call on any list EP</li>
+<li>this is how it looks (this response contains two lines)</li>
+<li>you&#39;ll get a chunked response, typically 1 line per chunk, but you&#39;ll have to buffer yourself until you have a complete line, because each of these lines can exceed the MTU</li>
+<li>but then for each line, you can parse the inner object as the type you actually want</li>
+<li>all apis use this and it&#39;s consistent -&gt; source</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kubernetes.io: watch events - source
+
+- [apimachinery:watch/watch.go#L40-L70](https://github.com/kubernetes/apimachinery/blob/681a08151eac875afc5286670195105118d3485d/pkg/watch/watch.go#L40-L70)
+- [apimachinery:meta/watch.go#L31-L40](https://github.com/kubernetes/apimachinery/blob/594fc14b6f143d963ea2c8132e09e73fe244b6c9/pkg/apis/meta/v1/watch.go#L31-L40)
+
+```go
+const (
+    Added    EventType = "ADDED"
+    Modified EventType = "MODIFIED"
+    Deleted  EventType = "DELETED"
+    Bookmark EventType = "BOOKMARK"
+    Error    EventType = "ERROR"
+)
+
+type WatchEvent struct {
+    Type string `json:"type"`
+    Object runtime.RawExtension `json:"object"`
+}
+```
+<aside class="notes"><ul>
+<li>we find more runtime generics.</li>
+<li>we&#39;ve seen that kubernetes maintains consistency, in general either with code generation (client-go), or runtime dynamic types (runtime.RawExtension) in list or watch types, we&#39;ve see the api setup</li>
+<li>covered all concepts and main api consistencies we need</li>
+<li>so the rest will be more from a rust POV</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### Rust Modelling
+
+<ul>
+    <li class="fragment"><a href="https://github.com/clux/kube-rs/">clux/kube-rs</a></li>
+    <li class="fragment">Arnav Singh / @Arnavion - <a href="https://github.com/Arnavion/k8s-openapi">k8s-openapi</a></li>
+</ul>
+
+<aside class="notes"><ul>
+<li>like the go code, will be slightly simplifying for readability, and most of the stuff here is kube-rs</li>
+<li>but start out with code in a project by Arnav Singh aka Arnavion</li>
+<li>the project really is the lynchpin that makes any generics possible</li>
+<li>generates rust structures from openapi schemas, plus factoring out some of &quot;the consistency&quot; into a few traits that is then implemented for these structures</li>
+<li>so huge shoutout to him. for what i believe is just his side project, i really cannot thank him enough</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### k8s-openapi: Resource Trait
+
+```rust
+pub trait Resource {
+    const API_VERSION: &'static str;
+    const GROUP: &'static str;
+    const KIND: &'static str;
+    const VERSION: &'static str;
+}
+```
+
+<aside class="notes"><ul>
+<li>TL;DR: A rust trait is &quot;behaviour&quot; you can implement for a type, and then later you can use that trait as a constraint in function signatures</li>
+<li>Generally &quot;behaviour&quot;, can&#39;t put dynamic data in them, but you are allowed to put in static associated constants.</li>
+<li>so we can use this to map an object to where <strong>on</strong> the api it lives.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### k8s-openapi: Metadata Trait
+
+```rust
+pub trait Metadata: Resource {
+    fn metadata(&self) -&gt &ObjectMeta;
+}
+```
+
+<aside class="notes"><ul>
+<li>Trait is just a way to grab metadata that is consistent across all objects.</li>
+<li>Even if always on same key, type system can&#39;t guarantee that.</li>
+<li>Slightly simplifying; k8s-openapi distinguishes between listable types using <code>ListMeta</code>, but everything else returns <code>ObjectMeta</code></li>
+<li>and we (kube-rs) can only really do useful ops on top of objects that have <code>ObjectMeta</code>, so slightly hiding a few details.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-rs: Resource struct
+
+```rust
+pub struct Resource {
+    pub api_version: String,
+    pub group: String,
+    pub kind: String,
+    pub version: String,
+    pub namespace: Option&ltString&gt
+}
+```
+
+<aside class="notes"><ul>
+<li>Got two root traits. Let&#39;s build a dynamic api on top of them.</li>
+<li>You may note that this is basically a dynamic version of the <code>Resource</code> trait, but it allows carrying the dynamic namespace property and can be instantiated at runtime from an arbitrary object (helpful for CRDs).</li>
+<li>We <em>CAN</em> fill these in at runtime, but for existing openapi structs, can get a blanket ctor with one trait constrait:</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-rs: Resource namespaced ctor
+
+```rust
+use k8s_openapi::Resource as ResourceTrait;
+
+impl Resource {
+    pub fn namespaced&ltK: ResourceTrait&gt(ns: &str) -&gt Self {
+        Self {
+            api_version: K::API_VERSION.to_string(),
+            kind: K::KIND.to_string(),
+            group: K::GROUP.to_string(),
+            version: K::VERSION.to_string(),
+            namespace: Some(ns.to_string()),
+        }
+    }
+}
+```
+
+<aside class="notes"><ul>
+<li>All the data, except namespace, is already on the trait, so we just constrain by that</li>
+<li>NB: Resource type is not generic, but this particular ctor is.</li>
+<li>With this we can hit every objects api endpoints. Demonstrate: mapper</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-rs: Url mapper
+
+```rust
+impl Resource {
+    fn make_url(&self) -&gt String {
+      format!("/{group}/{api_version}/{namespaces}{resource}",
+        group = if self.group.is_empty() {"api"} else {"apis"},
+        api_version = self.api_version,
+        resource = to_plural(&self.kind.to_ascii_lowercase()),
+        namespaces = self.namespace.as_ref()
+          .map(|n| format!("namespaces/{}/", n))
+          .unwrap_or_default())
+    }
+}
+```
+
+<aside class="notes"><ul>
+<li>function that dictates all of k8s urls on top of this struct</li>
+<li>handles that special empty group case</li>
+<li>CAVEAT: due to limitation of the trtait: load-bearing pluralize.
+phrase i had never believed i had to use to describe software architecture, let alone from my own designs, but here we are.</li>
+<li>..but with url mapper implement =&gt; we CAN MAKE DYNAMIC API</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-rs: Dynamic API
+
+```rust
+impl Resource {
+    pub fn create(&self, pp: &PostParams, data: Vec&ltu8&gt)
+        -&gt Result&ltRequest&ltVec&ltu8&gt&gt&gt
+    {
+        let base_url = self.make_url() + "?";
+        let mut qp = Serializer::new(base_url);
+        if pp.dry_run {
+            qp.append_pair("dryRun", "All");
+        }
+        let urlstr = qp.finish();
+        let req = http::Request::post(urlstr);
+        req.body(data).map_err(Error::HttpError)
+    }
+}
+```
+
+<aside class="notes"><ul>
+<li>Create as ex. for basic crud.</li>
+<li>Takes one of the PostParam structs (types.go), binary data, makes qp from postparams, and preps request. You must execute yourself. Sans-io.</li>
+<li>This is now something similar to other language clients. Bytes come in, goes through a url mapper and an http call, and response bytes come out.</li>
+<li>Of course, this isn&#39;t really what we want. We don&#39;t want to be interjecting at every point, to try deserialize a bytestream into a concrete type.</li>
+<li>What we really want, is automatic ser/de-ization, and a mechanism generic over K that is aware of underlying struct for the resource.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-rs: Typed API
+
+```rust
+pub struct Api&ltK&gt {
+    resource: Resource,
+    client: Client,
+    phantom: PhantomData&ltK&gt,
+}
+
+let api: Api&ltPod&gt = Api::namespaced(client, ns);
+```
+
+<aside class="notes"><ul>
+<li>For that we our first truly generic type. The API. It&#39;s a wrapper around a resource, with an http client handle inside of it, along with an empty marker of what type it&#39;s for.</li>
+<li>Coz; won&#39;t actually store data related to K, so just a marker for typesystem.</li>
+<li>we need to specify what type this api is for anyway, so may as well be ctor</li>
+<li>Can make Api::namespaced by referencing Resource::namespaced</li>
+<li>can create an Api (Client), and tell it at ctor time, that it&#39;s for Pods.</li>
+<li>Now Let&#39;s generalize create.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-rs: Typed API methods
+
+```rust
+impl&ltK&gt Api&ltK&gt
+where K: Clone + Deserialize + Metadata,
+{
+    pub async fn create(&self, pp: &PostParams, data: &K)
+        -&gt Result&ltK&gt
+    where K: Serialize,
+    {
+        let bytes = serde_json::to_vec(&data)?;
+        let req = self.resource.create(&pp, bytes)?;
+        self.client.request::&ltK&gt(req).await
+    }
+}
+```
+
+<aside class="notes"><ul>
+<li>weird syntax? generic impls, K needs to satisfy constraints</li>
+<li>K needs extra constraints for one method</li>
+<li>Uses serialize trait, and tells client to execute req and deserialize</li>
+<li>By using generics and constraints on <code>K</code> we have implement this <code>client-go</code> like api method, across all types just a single blanket impl.</li>
+<li>Great, but can generics solve everything? Won&#39;t we still need codegen?</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### Code Generation
+
+<ul>
+    <li class="fragment">first class integration via cargo build</li>
+    <li class="fragment"><a href="https://doc.rust-lang.org/reference/procedural-macros.html">procedural macros</a></li>
+    <li class="fragment">#[derive(CustomTrait)]</li>
+    <li class="fragment">#[custom_trait_attr]</li>
+<!--- cargo expand-->
+</ul>
+
+<aside class="notes"><ul>
+<li>Yes, code generation still happens in rust. But it&#39;s a required part of cargo build to execute.</li>
+<li>Called proc macros, and I like to desc as &quot;compile time decorators&quot;</li>
+<li>user interface to them is super compelling, though tricky to write</li>
+<li>But because of that first class support for code generation, a whole class of errors where you are operating on a stale version of generated code, is now elimiated. The compiler disallows that possibility.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### Serialize
+<!--USER FACING CODE STARTS HERE-->
+
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FooSpec {
+    name: String,
+    is_bad: Option&ltString&gt,
+}
+```
+
+<aside class="notes"><ul>
+<li>First example everyone sees is derive <code>Serialize</code> + <code>Deserialize</code> from the <code>serde</code> library. Implements these traits and allows you to convert between various serialization formats. Can customize it further with struct level, or field level attributes.</li>
+<li>In practice, you often end up writing much of the same gunk/annotations as you would with go&#39;s json encoding to like distinguish casings of your code and disk format, but there&#39;s type safety + error handling around it.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-derive: CustomResource
+
+```rust
+#[derive(CustomResource, Serialize, Deserialize, Clone)]
+#[kube(group = "clux.dev", version = "v1", kind = "Foo")]
+#[kube(namespaced, status = "FooStatus")]
+pub struct FooSpec {
+    name: String,
+    info: Option&ltString&gt,
+}
+```
+
+<aside class="notes"><ul>
+<li>We can also make our own derivable with our own options for it. Here we are using kube&#39;s <code>CustomResource</code> proc-macro, and we are telling kube, the values of the resource parameters (group, version, kind). This will create all the code around a custom resource.</li>
+<li>Bunch more options available, we&#39;ve tried to mimic the usability of kubebuilder setup in this particular case.</li>
+<li>What it does: creating a type Foo attaching spec/status/meta, ctor, crd method.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### Example: Using a CRD
+
+```rust
+let crds: Api&ltCustomResourceDefinition&gt = Api::all(client);
+crds.create(&pp, &Foo::crd()).await;
+
+let foos: Api&ltFoo&gt = Api::namespaced(client, &namespace);
+
+let f = Foo::new("eirik-example", FooSpec {
+    name: "i am a foo crd instance".into(),
+    info: None
+});
+let o = foos.create(&pp, &f2).await?;
+```
+
+<aside class="notes"><ul>
+<li>The generated <code>Foo</code> type (containing metadata, spec, pointing to your spec, etc), also has a <code>crd</code> method. So you can literally just apply it and start using it in like <code>main</code>.</li>
+<li>ideally, error handle and use server side apply. illustrative.</li>
+<li>also, only really covered Api::create</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### WatchEvent
+
+```rust
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(tag = "type", content = "object")]
+#[serde(rename_all = "UPPERCASE")]
+pub enum WatchEvent&ltK&gt {
+    Added(K),
+    Modified(K),
+    Deleted(K),
+    Bookmark(Bookmark),
+    Error(ErrorResponse),
+}
+```
+
+<aside class="notes"><ul>
+<li>NOW. go beyond basic crud and into watch land.</li>
+<li>1st WE: maps nicely one in apimachinery that contained the dynamic runtime object.</li>
+<li>In rust, it can be packed into a generic enum, for a fully typed one. Great.</li>
+<li>The serde tags here tells serde that the values in enum variants -&gt; in object key, and enum variant name -&gt; in tag key (tags sent/recvd as uppercase to match go convention).</li>
+<li>..This is what watch would return...</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### Watch
+
+```rust
+impl&ltK&gt Api&ltK&gt
+where K: Clone + Deserialize + Metadata,
+
+    pub async fn watch(&self, lp: &ListParams, rv: &str)
+        -&gt Result&ltimpl Stream&ltItem = Result&ltWatchEvent&ltK&gt&gt&gt&gt
+    {
+        let req = self.resource.watch(&lp, &rv)?;
+        self.client.request_events::&ltK&gt(req).await
+    }
+}
+```
+
+<aside class="notes"><ul>
+<li>..well. Significantly more intimidating signature.</li>
+<li>have type that contain impl Stream =&gt; constraint says the return type must implement the Stream trait.</li>
+<li>Stream == async iterator. Have to await each new element.</li>
+<li>Element? WatchEvent that can fail &lt;- Stream of</li>
+<li>stream is also wrapped in result because HTTP req can fail, so that has to succeed before you can start streaming</li>
+<li>fairly chonky type</li>
+<li>looks hard immediately, and haven&#39;t even talked about the corner cases..</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### Broken: Watch
+
+<ul>
+<li class="fragment">resourceVersion bookkeeping</li>
+<li class="fragment">stale resourceVersions <a href="https://github.com/kubernetes/kubernetes/issues/87292">#87292</a></li>
+<li class="fragment">Removed events are near useless</li>
+<li class="fragment">5 minute max limit <a href="https://github.com/kubernetes/kubernetes/issues/6513">#6513</a></li>
+<li class="fragment">large data use <a href="https://github.com/kubernetes/kubernetes/issues/90339">#90339</a>, <a href="https://github.com/kubernetes/kubernetes/issues/82655">#82655</a></li>
+</ul>
+
+<aside class="notes"><ul>
+<li>Gotta Track ResourceVersions; integers passed on via etcd, must pass these on for every watch call, to tell k8s where you left off.</li>
+<li>Sometimes these RVs are stale, and if you are building a state cache like a reflector, you have to re-list and get all the state back for every object in the system if you get desynchronized. Before bookmarks, that was very likely to happen.</li>
+<li>Partly a consequence; If you are relying on Removed events, well, that&#39;s now purely best effort. What happens if your app crashed? Or you get desynched in between? That ev lost. At least init from zero rv gives you a new event for existing items. But for deleted items? You&#39;ll never get that event again.</li>
+<li>Watch calls also can&#39;t reliably stay open for more than 5 minutes, so you have to keep issuing this watch call at least that frequently.</li>
+<li>and finally, sheer data use of it. On EVERY CHANGE incl status. Seen NodeStatus, last updated timestamps inside conditions? Every few seconds, you&#39;ll get the whole heckin&#39; object. (Can hide, but still networked)</li>
+<li>=&gt; anyone building a controller type solution will need abstractions.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### watcher abstraction
+
+<ul class="fragment">
+  <li>LIST</li>
+  <li>stream</li>
+  <li>track resource versions</li>
+  <li>handle stream errors behind the scenes</li>
+  <li>maybe RE-LIST (duplicate + dropped events)</li>
+  <li>propagate user errors</li>
+  <li>only propagate events</li>
+</p>
+
+<aside class="notes"><ul>
+<li>what would such an abstraction do?</li>
+<li>Well we got to list then watch continously, but not longer than 5 minutes, propagate all user errors, re-list on desync errors, keep track of resource versions, and still somehow encapsulate it all in one nice stream. It&#39;s absolutely not trivial.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-runtime
+
+<ul>
+  <li class="fragment">Teo K. Röijezon - <a href="https://github.com/teozkr/">teozkr</a></li>
+  <li class="fragment">Entirely Stream based solution</li>
+  <li class="fragment">watcher</li>
+  <li class="fragment">reflector with Store</li>
+  <li class="fragment">Controller</li>
+</ul>
+
+<aside class="notes"><ul>
+<li>So a huge shoutout to my other maintainer: Teo.</li>
+<li>He basically figured out an entirely Stream based solution for (not only) watchers, but also reflectors and controllers</li>
+<li>and because these objects are just this rust native concept of a stream, they end up being possible to manipulate in very standard ways; store, pass around, extend, integrate, instrument, test</li>
+<li>we&#39;ve not gotten around to showcase, nor poc all of that properly, and this definitely has rough edges, but it&#39;s definitely the best evolution point so far for a controller-runtime in rust</li>
+<li>we&#39;ll cover the basics of how they work, but it&#39;s going to go quickly. watchers first.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-runtime: watcher
+
+```rust
+enum State&ltK: Meta + Clone&gt {
+    /// Empty state, awaiting a LIST
+    Empty,
+    /// LIST complete, can start watching
+    InitListed { resource_version: String },
+    /// Watching, can await/restart watch/restart
+    Watching {
+        resource_version: String,
+        stream: BoxStream&lt'static, Result&ltWatchEvent&ltK&gt&gt&gt,
+    },
+}
+```
+
+```rust
+watcher(api, listparams)
+    -&gt impl Stream&ltItem = Result&ltwatcher::Event&ltK&gt&gt&gt
+```
+
+<aside class="notes"><ul>
+<li>Funnily enough, watchers end up being one of the more complicated of the three. Entirely due to watch corner cases.</li>
+<li>Internally, we model it with FSM. And we are using basically a state transformer to pass around the STATE (shown above), along with the actual watch events (ultimate thing we want to return).</li>
+<li>Sometimes the watcher will give you a whole chunk of items, that happens during a relist. Generally, you want to work with a flattened version of that stream, we currently have some helpers for that.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-runtime: watcher usage
+
+```rust
+let cms: Api&ltConfigMap&gt = Api::namespaced(client, &namespace);
+let lp = ListParams::default();
+
+let mut w = try_flatten_applied(watcher(cms, lp)).boxed();
+while let Some(event) = w.try_next().await? {
+    info!("Got: {:?}", event);
+}
+```
+
+<aside class="notes"><ul>
+<li>suppose i only want to subscribe to Added or Modified ew for ConfigMaps, in some namespace, this is how that would look.</li>
+<li>line 4 crucial; watcher on configmaps, flatten and filter to applied events</li>
+<li>handles all the watch complexity</li>
+<li>and the fact that there&#39;s an unflattened stream you can ultimately work with, means that any state store built on top of this will always have some data, even during a relist</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-runtime: reflector
+
+
+```rust
+pub fn reflector&ltK, W&gt(mut store: Writer&ltK&gt, stream: W)
+    -&gt impl Stream&ltItem = W::Item&gt
+where
+    K: Metadata + Clone,
+    W: Stream&ltItem = Result&ltwatcher::Event&ltK&gt&gt&gt,
+{
+    stream.inspect_ok(move |event| {
+        store.apply_watcher_event(event)
+    })
+}
+```
+
+
+<aside class="notes"><ul>
+<li>a reflector builds on top of a watcher, by recording objects in a store as events pass through</li>
+<li>i.e. when watchevents happen we insert/replace/remove objects from store, then pass on the events unmodified</li>
+<li>complicated signature, you need a Store<K> (which i&#39;ve not defined, but hashmap of objects)</li>
+<li>you need the unflattend stream that the watcher is outputting; that&#39;s W</li>
+<li>but ultimately, ends up being a one line tap/intercept_ok on a watcher stream. really nice conceptually.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-runtime: reflector usage
+
+```rust
+let cms: Api&ltConfigMap&gt = Api::namespaced(client, &namespace);
+
+let writer = Writer::&ltConfigMap&gt::default();
+let reader = writer.as_reader();
+let rf = reflector(writer, watcher(cms, lp));
+
+let mut w = try_flatten_applied(rf).boxed();
+while let Some(event) = w.try_next().await? {
+    info!("Applied {}", Meta::name(&event));
+}
+```
+
+<aside class="notes"><ul>
+<li>To use it, you make a writer and a watcher, combine them. Then you use the reflector just as a watcher at the end.</li>
+<li>More importantly; 3 lines center; You can create a reader from the writer, and use that as state in a like a web framework. Can be cloned.</li>
+<li>What is not clonable; the writer. Because it&#39;s unsound to have multiple writers for a Store. So that&#39;s illegal.</li>
+<li>By illegal; not a documentation convention.</li>
+<li>but actually, a compile error. Rust&#39;s move semantics makes the writer effectively disappear into the reflector, and because it&#39;s not clonable, you&#39;re done. You can only have one writer. One of those great guarantees you can get from this language.</li>
+<li>Move on to the final object; the Controller.</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-runtime: Controller
+
+```rust
+#[tokio::main]
+async fn main() -&gt Result&lt(), kube::Error&gt {
+    let client = Client::try_default().await?;
+    let context = Context::new(());
+    let cmgs = Api::&ltConfigMapGenerator&gt::all(client.clone());
+    let cms = Api::&ltConfigMap&gt::all(client.clone());
+
+    Controller::new(cmgs, ListParams::default())
+        .owns(cms, ListParams::default())
+        .run(reconcile, error_policy, context)
+        .await;
+    Ok(())
+}
+```
+
+<aside class="notes"><ul>
+<li>C is a system reconciles a root object/CR along with child objects it owns - calls a reconcile fn when anything related changes.</li>
+<li>C&#39;s job; just combining input streams from these various objects, debouncing rec req, scheduling retries.</li>
+<li>You have to make sure the world is in a correct state, when you get rec. req, by reconciling this root obj.</li>
+<li>builder pattern: should remind you a bit of controller-runtime. heavily inspired (got help).</li>
+<li>completely sufficient main</li>
+<li>ex: Make a C for CMG that tries to ensure CM is in correct state. CMG == CR.</li>
+<li>showed how to derive your CR from a struct earlier, so the only few remaining bits are to provide: an error handling policy, and a reconciler fn, that will be called with a context you can define</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### kube-runtime: Controller reconciler
+
+```rust
+async fn reconcile(cmg: ConfigMapGenerator, ctx: Context&lt()&gt)
+        -&gt Result&ltReconcilerAction, Error&gt
+{
+    // TODO: update CM to match cmg.content
+    // TODO: update CMG.status
+    Ok(ReconcilerAction {
+        requeue_after: Some(Duration::from_secs(300)),
+    })
+}
+```
+
+<aside class="notes"><ul>
+<li>How reconcile looks. Async fn that needs to return a ReconcilerAction if it succeeds.</li>
+<li>In the interest of not obscuring the slide; this fn is where you would grab a client from the Context, and start making api calls to k8s to ensure the corr. CM is up to date with CM GEN. Write to status object to indicate how far you got. last modified timestamp.</li>
+<li>feels like cheating perhaps? &quot;how do you build controllers? just build controllers&quot;</li>
+<li>but for designing your reconcile, this is where your business logic resides</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### Building Controllers
+
+- controller-runtime advice applies <!-- .element: class="fragment" -->
+- idempotent, error resilient reconcilers <!-- .element: class="fragment" -->
+- use server side apply <!-- .element: class="fragment" -->
+- use finalizers / ownerreferences <!-- .element: class="fragment" -->
+
+<aside class="notes"><ul>
+<li>most advice from kubebuilder / controller-runtime generally applies (talks)</li>
+<li>TL;DR: reconcile needs to be idempotent, be able to resume if it fails, deal with duplicate events in sane way, use server side apply.</li>
+<li>use finalizers or ownerrefs to gc. (cant rely on removed events)</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### Examples
+
+<ul>
+    <li class="fragment"><a href="https://github.com/clux/controller-rs">controller-rs</a> and <a href="https://github.com/clux/version-rs">version-rs</a></li>
+    <li class="fragment">Bring your own deps</li>
+    <li class="fragment">web: <a href="https://crates.io/crates/actix-web">actix-web</a>, <a href="https://crates.io/crates/warp">warp</a>, <a href="https://crates.io/crates/rocket">rocket</a></li>
+    <li class="fragment">o11y: <a href="https://crates.io/crates/tracing">tracing</a>, <a href="https://crates.io/crates/sentry">sentry</a>, <a href="https://crates.io/crates/prometheus">prometheus</a></li>
+</ul>
+
+<aside class="notes"><ul>
+<li>want complete examples: two repos; controller-rs (controller inside actix, with tracing, custom metrics), version-rs (light weight; deployment reflector exposed through actix - single file 100 lines)</li>
+<li>No scaffolding here. Choose your own dependencies.</li>
+<li>need a web framework? Reasonable. It&#39;s at least good practice to expose metrics, so at the very least a simple web server is helpful</li>
+<li>o11y: tracing eco really solid - slap on a #[instrument] proc macro, and add your favourite tracing subscriber</li>
+<li>sentry for error reporting, or prometheus for custom metrics</li>
+<li>highly recommend all these. but beyond that...</li>
+</ul>
+</aside></script></section><section  data-markdown><script type="text/template">### End
+
+- Eirik Albrigtsen
+- [clux](https://github.com/clux) / [@sszynrae](https://twitter.com/sszynrae)
+- [kube-rs](https://github.com/clux/kube-rs)
+- slides at http://clux.github.io/kubecon2020
+- [babylonhealth](https://github.com/babylonhealth/)
+
+<aside class="notes"><ul>
+<li>that&#39;s it. been talking for some time. hope it&#39;s been useful. source in link, all on crates.io, slides available at this link</li>
+<li>Api crate (kube) reasonable stable, but kube-runtime is pretty new still, so anyone that&#39;s willing to get their hands dirty, help is appreciated.</li>
+<li>Changes are documented in our CHANGELOG - so check that if using it + pin version.</li>
+<li>Oh, also wanna plug babylonhealth. Who I work for. They do great things with kubernetes in the healthcare space. They&#39;re also great in their commitment to open source, and have been particularly encouraging w.r.t. this talk. So a big thank you to those guys as well.</li>
+</ul>
+<!--- SKIP: We're doing this because we want something: light weight, easy to understand. Not much indirection. Defo No scaffolding.--></aside></script></section></div>
+    </div>
+
+    <script src="./dist/reveal.js"></script>
+
+    <script src="./plugin/markdown/markdown.js"></script>
+    <script src="./plugin/highlight/highlight.js"></script>
+    <script src="./plugin/zoom/zoom.js"></script>
+    <script src="./plugin/notes/notes.js"></script>
+    <script src="./plugin/math/math.js"></script>
+    <script>
+      function extend() {
+        var target = {};
+        for (var i = 0; i < arguments.length; i++) {
+          var source = arguments[i];
+          for (var key in source) {
+            if (source.hasOwnProperty(key)) {
+              target[key] = source[key];
+            }
+          }
+        }
+        return target;
+      }
+
+      // default options to init reveal.js
+      var defaultOptions = {
+        controls: true,
+        progress: true,
+        history: true,
+        center: true,
+        transition: 'default', // none/fade/slide/convex/concave/zoom
+        plugins: [
+          RevealMarkdown,
+          RevealHighlight,
+          RevealZoom,
+          RevealNotes,
+          RevealMath
+        ]
+      };
+
+      // options from URL query string
+      var queryOptions = Reveal().getQueryHash() || {};
+
+      var options = extend(defaultOptions, {"transition":"none"}, queryOptions);
+    </script>
+
+
+    <script>
+      Reveal.initialize(options);
+    </script>
+  </body>
+</html>
