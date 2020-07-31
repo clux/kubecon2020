@@ -21,8 +21,8 @@
 - slides at http://clux.github.io/kubecon2020
 
 notes:
-- eirik/clux - one of the main maintainers on kube-rs.
-- talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, look at how these are put in place, how enforced, and how reliable are
+- eirik - one of the main maintainers on kube-rs.
+- also go by clux on github, or that on twitter
 
 ---
 ### Hidden Generics in Kubernetes' API
@@ -32,9 +32,9 @@ notes:
 - Rust Controllers <!-- .element: class="fragment" -->
 
 notes:
-- We'll identify some of these invariants first while covering parts the kubernetes codebase.
+- talking about the kubernetes api, some of the generic assumptions and invariants that kubernetes wants to maintain, look at how these are put in place, how enforced, and how reliable are
 - Then talk about how to model the kuberenets api in rust using generics, and see that it gives us the same consistency with a lot less work.
-- We'll also talk about abstractions on top of this rust Api, that ultimately lets you write light weight generic controllers
+- We'll also talk about abstractions on top of this rust Api, that ultimately lets you write light weight, and generic controllers
 
 
 <!--Still, it's not a magic bullet. Kubernetes is written in Go; Any broken invariants on the Go side would still need to be respected in rust land.
