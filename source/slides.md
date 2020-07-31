@@ -22,7 +22,8 @@
 
 notes:
 - eirik - one of the main maintainers on kube-rs.
-- also go by clux on github, or that on twitter
+- before we start off; here's a bunch a bunch of links, me, sources, slides
+- go by clux on github, or that on twitter
 
 ---
 ### Hidden Generics in Kubernetes' API
@@ -254,9 +255,9 @@ notes:
 - much code
 - client api, also informers for every object, client setup per group
 - NEXT: as a result; client-go > 100K LOC (without vendoring)
-- and i'm not at all passing judgement at this. this is great.
-the fact that everything looks the same in here, is what enables `kubectl` to provide such a consistent interface, even if the language makes it hard for you to do so.
-- still, definitely not outside the scope of criticism; letting someone else do it and point you to a kubecon keynote from barcelona
+- and i'm not really to pass judgement at this. this is great.
+the fact that everything looks the same in here, takes advantage of apimachinery consistenly, is what enables `kubectl` to provide such a consistent interface, even if the language makes it hard for you to do so.
+- there's a 5 minute clip; this kubecon keynote from barcelona (which also matches some of my motivations for this)
 - in the mean time; moving on to documented api concepts
 
 ---
@@ -298,7 +299,7 @@ notes:
 - it's a relatively minor inconsistency, coz we can just special case the empty group or core, but it's still awkward.
 
 ---
-## kubernetes.io: watch events
+### kubernetes.io: watch events
 
 [api-concepts#efficient-detection-of-changes](https://kubernetes.io/docs/reference/using-api/api-concepts/#efficient-detection-of-changes)
 
@@ -318,9 +319,8 @@ notes:
 - but then for each line, you can parse the inner object as the type you actually want
 - all apis use this and it's consistent -> source
 
-
 ---
-## kubernetes.io: watch events - source
+### kubernetes.io: watch events - source
 
 - [apimachinery:watch/watch.go#L40-L70](https://github.com/kubernetes/apimachinery/blob/681a08151eac875afc5286670195105118d3485d/pkg/watch/watch.go#L40-L70)
 - [apimachinery:meta/watch.go#L31-L40](https://github.com/kubernetes/apimachinery/blob/594fc14b6f143d963ea2c8132e09e73fe244b6c9/pkg/apis/meta/v1/watch.go#L31-L40)
@@ -702,7 +702,7 @@ notes:
 - So a huge shoutout to my other maintainer: Teo.
 - He basically figured out an entirely Stream based solution for (not only) watchers, but also reflectors and controllers
 - and because these objects are just this rust native concept of a stream, they end up being possible to manipulate in very standard ways; store, pass around, extend, integrate, instrument, test
-- we've not gotten around to showcase, nor poc all of that, and this definitely has rough edges, but it's definitely the best evolution point so far for a controller-runtime in rust
+- we've not gotten around to showcase, nor poc all of that properly, and this definitely has rough edges, but it's definitely the best evolution point so far for a controller-runtime in rust
 - we'll cover the basics of how they work, but it's going to go quickly. watchers first.
 
 ---
@@ -714,7 +714,7 @@ enum State<K: Meta + Clone> {
     Empty,
     /// LIST complete, can start watching
     InitListed { resource_version: String },
-    /// Watching, can awaited stream (But on desync, move back to Empty)
+    /// Watching, can await/restart watch/restart
     Watching {
         resource_version: String,
         stream: BoxStream<'static, Result<WatchEvent<K>>>,
@@ -746,10 +746,10 @@ while let Some(event) = w.try_next().await? {
 ```
 
 notes:
-- suppose i only want to subscribe to Added or Modified ew for ConfigMaps, in some namespace, this is how that would look. that could basically be your main.
-- line 4; watcher on configmaps, flatten and filter to applied events
+- suppose i only want to subscribe to Added or Modified ew for ConfigMaps, in some namespace, this is how that would look.
+- line 4 crucial; watcher on configmaps, flatten and filter to applied events
 - handles all the watch complexity
-- and the fact that there's an unflattened stream you can ultimately work with, means that a state store will always have some data, even during a relist
+- and the fact that there's an unflattened stream you can ultimately work with, means that any state store built on top of this will always have some data, even during a relist
 
 ---
 ### kube-runtime: reflector
@@ -774,7 +774,7 @@ notes:
 - i.e. when watchevents happen we insert/replace/remove objects from store, then pass on the events unmodified
 - complicated signature, you need a Store<K> (which i've not defined, but hashmap of objects)
 - you need the unflattend stream that the watcher is outputting; that's W
-- but ultimately, a one line body on top of watcher. cool conceptually.
+- but ultimately, ends up being a one line tap/intercept_ok on a watcher stream. really nice conceptually.
 
 
 ---
@@ -798,8 +798,8 @@ notes:
 - More importantly; 3 lines center; You can create a reader from the writer, and use that as state in a like a web framework. Can be cloned.
 - What is not clonable; the writer. Because it's unsound to have multiple writers for a Store. So that's illegal.
 - By illegal; not a documentation convention.
-- but actually, a compile error. Rust's move semantics makes the writer effectively disappear into the reflector, and because it's not clonable, you're done. You can only have one writer. One of those things I really like about the language.
-- Move on to the finale here; the Controller.
+- but actually, a compile error. Rust's move semantics makes the writer effectively disappear into the reflector, and because it's not clonable, you're done. You can only have one writer. One of those great guarantees you can get from this language.
+- Move on to the final object; the Controller.
 
 ---
 ### kube-runtime: Controller
@@ -821,8 +821,9 @@ async fn main() -> Result<(), kube::Error> {
 ```
 
 notes:
-- C is a system reconciles an object/CR along with child objects it owns - calls a reconcile fn when anything related changes.
-- That's the C's job; combining input streams, debouncing events, scheduling retries.
+- C is a system reconciles a root object/CR along with child objects it owns - calls a reconcile fn when anything related changes.
+- C's job; just combining input streams from these various objects, debouncing rec req, scheduling retries.
+- You have to make sure the world is in a correct state, when you get rec. req, by reconciling this root obj.
 - builder pattern: should remind you a bit of controller-runtime. heavily inspired (got help).
 - completely sufficient main
 - ex: Make a C for CMG that tries to ensure CM is in correct state. CMG == CR.
@@ -845,7 +846,9 @@ async fn reconcile(cmg: ConfigMapGenerator, ctx: Context<()>)
 
 notes:
 - How reconcile looks. Async fn that needs to return a ReconcilerAction if it succeeds.
-- In the interest of not obscuring the slide; this fn is where you would grab a client from the Context, and start making api calls to k8s to ensure CM is up to date with GEN. Write to status object to indicate how far you got.
+- In the interest of not obscuring the slide; this fn is where you would grab a client from the Context, and start making api calls to k8s to ensure the corr. CM is up to date with CM GEN. Write to status object to indicate how far you got. last modified timestamp.
+- feels like cheating perhaps? "how do you build controllers? just build controllers"
+- but for designing your reconcile, this is where your business logic resides
 
 ---
 ### Building Controllers
@@ -856,8 +859,6 @@ notes:
 - use finalizers <!-- .element: class="fragment" -->
 
 notes:
-- seems handwavey, "how do you build controllers? just build controllers"
-- but not going to rehash best practices for writing controllers here
 - most advice from kubebuilder / controller-runtime generally applies (talks)
 - TL;DR: reconcile needs to be idempotent, be able to resume if it fails, deal with duplicate events in sane way, use server side apply.
 - use finalizers to gc. (cant rely on removed) If you control an object, put an ownerreference on it.
@@ -891,8 +892,8 @@ notes:
 
 notes:
 - that's it. been talking for some time. hope it's been useful. source in link, all on crates.io, slides available at this link
-- Api crate (kube) quite stable, but kube-runtime is pretty new still, so anyone that's willing to get their hands dirty, help is appreciated.
+- Api crate (kube) reasonable stable, but kube-runtime is pretty new still, so anyone that's willing to get their hands dirty, help is appreciated.
 - Changes are documented in our CHANGELOG - so check that if using it + pin version.
-- Oh, plug, for babylonhealth. Who I work for. They do great things with kubernetes in the healthcare space. They're also very reasonable in their commitment to open source, and in particular been very encouraging w.r.t. this talk. So a big thank you to those guys as well.
+- Oh, also wanna plug babylonhealth. Who I work for. They do great things with kubernetes in the healthcare space. They're also great in their commitment to open source, and have been particularly encouraging w.r.t. this talk. So a big thank you to those guys as well.
 
 <!--- SKIP: We're doing this because we want something: light weight, easy to understand. Not much indirection. Defo No scaffolding.-->
