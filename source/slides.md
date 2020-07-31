@@ -52,7 +52,7 @@ Yes, there are some broken invariants, but kubernetes is still remarkably consis
 
 notes:
 - Let's talk about what kubernetes actually provides.
-- these in particular
+- these are our sources
 - start by diving into the arguably most important file of all
 ---
 #### types.go: TypeMeta
@@ -69,6 +69,7 @@ type TypeMeta struct {
 ```
 
 notes:
+- This file really has everything you associate with a k8s object.
 - Every object has kind + version - flattened into the root structure
 
 ---
@@ -498,9 +499,9 @@ let api: Api<Pod> = Api::namespaced(client, ns);
 ```
 
 notes:
-- For that we our first truly generic type. It's a wrapper around a resource, with an http client handle inside of it, along with an empty marker of what type it's for.
-- Don't actually store data related to K, so just a marker for typesystem.
-- need to coerce to K somewhere, so should probably be at ctor.
+- For that we our first truly generic type. The API. It's a wrapper around a resource, with an http client handle inside of it, along with an empty marker of what type it's for.
+- Coz; won't actually store data related to K, so just a marker for typesystem.
+- we need to specify what type this api is for anyway, so may as well be ctor
 - Can make Api::namespaced by referencing Resource::namespaced
 - can create an Api (Client), and tell it at ctor time, that it's for Pods.
 - Now Let's generalize create.
