@@ -342,7 +342,8 @@ type WatchEvent struct {
 ```
 notes:
 - we find more runtime generics.
-- covered all concepts and main api consistencies now
+- we've seen that kubernetes maintains consistency, in general either with code generation (client-go), or runtime dynamic types (runtime.RawExtension) in list or watch types, we've see the api setup
+- covered all concepts and main api consistencies we need
 - so the rest will be more from a rust POV
 
 ---
